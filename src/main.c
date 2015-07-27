@@ -36,7 +36,7 @@ double find_max_double(double a[], int n);
 int main(int argc, char **argv){
   int i,j,k,l,n; 
   int nsteps=100;
-  double dt =0.01;
+  double dt =0.08;
   
   /* Computational (2D polar) grid coordinates */
   int nx1 = 50;
@@ -172,12 +172,13 @@ int main(int argc, char **argv){
 
   /*Discretize photon directions */
   double *xa1 = (double *) malloc(sizeof(double)*nxa1); 
-  double *xa1_b = (double *) malloc(sizeof(double)*nxa1); 
+  double *xa1_b = (double *) malloc(sizeof(double)*(nxa1+1)); 
   double *datamu = (double *) malloc(sizeof(double)*nxa1*3); 
   double *datamu_b = (double *) malloc(sizeof(double )*3*nxa1);//identify with left and bottom boundaries 
   double *pw = (double *) malloc(sizeof(double)*nxa1); 
   double **mu = allocate_2D_contiguous(datamu,nxa1,3); //CONVENTION: xa1 is the first dimension, component is second dim 
-  double **mu_b = allocate_2D_contiguous(datamu_b,nxa1,3); 
+  //  double **mu_b = allocate_2D_contiguous(datamu_b,nxa1,3); 
+  double **mu_b = allocate_2D_contiguous(datamu_b,nxa1+1,3); 
 
   nxa1 = uniform_angles2D(nxa1, phi_z, pw, mu, mu_b, xa1,xa1_b); 
 
@@ -200,12 +201,10 @@ int main(int argc, char **argv){
       //velocity_physical(X_physical(x1_b[i],x2_b[j]+dx2/2),Y_physical(x1_b[i],x2_b[j]+dx2/2),&ux,&vy);
       // Average normal edge velocity: just transform face center velocity to local orthonormal basis? 
       //vector_physical_to_coordinate(ux,vy,x2_b[j]+dx2/2,&U[i][j],&temp); 
-      
 
 	U[k][j][i] =0.0;
-	V[k][j][i] =1.0;
+	V[k][j][i] =1.0 *x1[i];
 	W[k][j][i] =0.0;
-
 
       //phi face j-1/2
       //velocity_physical(X_physical(x1_b[i]+dx1/2,x2_b[j]),Y_physical(x1_b[i]+dx1/2,x2_b[j]),&ux,&vy);
@@ -222,7 +221,7 @@ int main(int argc, char **argv){
   double *datacfl = malloc(sizeof(double)*nxa1*nx2*nx1); 
   double ***cfl_array =  allocate_3D_contiguous(datacfl,nxa1,nx2,nx1);
 
-  for(k=0; j<nxa1; k++){ //based on edge velocities or cell centered u,v?
+  for(k=0; k<nxa1; k++){ //based on edge velocities or cell centered u,v?
     for(j=0; j<nx2; j++){
       for(i=0; i<nx1; i++){
 	if (i >=is && i< ie && j >=js && j <je)
@@ -240,7 +239,7 @@ int main(int argc, char **argv){
     if (max_cfl ==0) //dont divide by 0
       exit(1);
     dt = CFL*dt/max_cfl; 
-    for(k=0; j<nxa1; k++){ //ERROR IN ADVECTION. ARRAY STARTS AT 1
+    for(k=0; k<nxa1; k++){ //ERROR IN ADVECTION. ARRAY STARTS AT 1
       for(j=0; j<nx2; j++){
 	for(i=0; i<nx1; i++){ 
 	if (i >=is && i< ie && j >=js && j <je)
@@ -255,7 +254,6 @@ int main(int argc, char **argv){
   printf("Largest CFL number = %lf\n",max_cfl); 
   
   /*Conserved variable on the computational coordinate mesh*/
-
   double *dataI =  malloc(sizeof(double )*nx1*nx2*nxa1);
   double ***I = allocate_3D_contiguous(dataI,nxa1,nx2,nx1); 
 
@@ -265,11 +263,16 @@ int main(int argc, char **argv){
     for(j=js; j<je; j++){
       for(i=is; i<ie; i++){
 	I[k][j][i] = initial_condition(x[j][i],y[j][i],xa1[k]); 
-	//if (I[k][j][i] > 0.0)
-	//printf("xa1 = %lf\n",xa1[k]);
       }
     }
   }
+  /*  for(k=ks; k<ke; k++){
+    for(j=js; j<je; j++){
+      for(i=is; i<ie; i++){
+	printf("k=%d j=%d i=%d I=%lf\n",k,j,i,I[k][j][i]);
+      }
+    }
+    } */
 
   /* Net fluxes in each dimension at each timestep */
   double U_plus,U_minus,V_plus,V_minus,W_plus,W_minus;
@@ -279,7 +282,7 @@ int main(int argc, char **argv){
   /* Using Visit VTK writer */
   char filename[20];
   /*CONVENTION: simply make angular dimension the third spatial dimension for now. Later may want to create separate variables */
-  int dims[] = {nx1_r+1, nx2_r+1, nxa1}; //dont output ghost cells. //nodal variables have extra edge point
+  int dims[] = {nx1_r+1, nx2_r+1, nxa1+1}; //dont output ghost cells. //nodal variables have extra edge point
   int nvars = 2;
   int vardims[] = {1, 3}; //Q is a scalar, velocity is a 3-vector 
   int centering[] = {0, 1}; // Q is cell centered, velocity is defined at edges
@@ -292,12 +295,12 @@ int main(int argc, char **argv){
   int index=0; 
   //fake the spatial z-separation in angle 
   double height =0.0;
-  for(k=ks; k<ke; k++){
+  for(k=ks; k<=ke; k++){
     for(j=js; j<=je; j++){
       for(i=is; i<=ie; i++){
 	pts[index] = x_b[j][i];
 	pts[++index] = y_b[j][i];
-	pts[++index] = xa1[k]; //height;
+	pts[++index] = xa1_b[k]; //height;
 	index++;
       }
     }
@@ -307,8 +310,8 @@ int main(int argc, char **argv){
   /* pack U,V,W into a vector */
   float *edge_vel = (float *) malloc(sizeof(float)*(nx1_r+1)*(nx2_r+1)*(nxa1+1)*3); //An array of size nI*nJ*nK*3 
   index=0; 
-  for(k=ks; k<ke; k++){
-    for(j=js; j<=je; j++){ // j=je ghost cells are messed up since U,V,W arent initialized that far
+  for(k=ks; k<=ke; k++){
+    for(j=js; j<=je; j++){ //ERROR: j=je ghost cells are messed up since U,V,W arent initialized that far
       for(i=is; i<=ie; i++){
 	//	vector_coordinate_to_physical(U[i][j],V[i][j], x2[j], &ux,&vy);
 	//edge_vel[index] = U[k][j][i];
@@ -325,11 +328,26 @@ int main(int argc, char **argv){
   //  vars       An array of variables.  The size of vars should be nvars.
   //                 The size of vars[i] should be npts*vardim[i].
   float *realI; //excludes spatial ghost cells
-  realI =(float *) malloc(sizeof(double)*nx1_r*nx2_r*nxa1);
+  realI =(float *) malloc(sizeof(float)*nx1_r*nx2_r*nxa1);//ERROR IN ADVECTION. SIZEOF(DOUBLE)
+  //for now, explicitly copy subarray corresponding to real zonal info:
+  index=0; 
+  for (k=ks; k<ke; k++){
+    for (j=js; j<je; j++){
+      for (i=is; i<ie; i++){
+	realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
+	index++;
+      }
+    }
+  }
   float *vars[] = {(float *) realI, (float *)edge_vel};
   sprintf(filename,"rte-000.vtk"); 
-  write_curvilinear_mesh(filename,3,dims, pts, nvars,vardims, centering, varnames, vars);
-  
+  write_curvilinear_mesh(filename,1,dims, pts, nvars,vardims, centering, varnames, vars);
+  /*  double maxI[12];
+  for (k=ks; k <ke; k++){
+    maxI[k] = find_max(realI+(k*nx1_r*nx2_r),nx1_r*nx2_r);
+    printf("%d angular bin theta %lf, max{I} = %lf \n",k,xa1[k],maxI[k]); 
+    } */
+
   /*-----------------------*/
   /* Main timestepping loop */
   /*-----------------------*/
@@ -512,8 +530,9 @@ double Y_physical(double x1, double x2){
 }
 
 double initial_condition(double x, double y, double xa1){
-  if (x >= 1.0 && x <= 2.0 && y >= 1.0 && y <=2.0 && xa1 >= 3*M_PI/2)
+  if (x >= 1.0 && x <= 2.0 && y >= 1.0 && y <=2.0 && xa1 >= 3*M_PI/2){
     return(1.0);
+  }
   return(0.0);
 }
 
@@ -656,8 +675,12 @@ double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **m
     xa1_b[i] = xa1_b[i-1] + dxa1; 
     xa1[i] = xa1[i-1] + dxa1; 
   }
+
+  //add another boundary ray for purposes of VTK output
+  xa1_b[nxa1]  = xa1_b[nxa1-1] + dxa1; 
  
-  for (i=0; i<nxa1; i++){
+  for (i=0; i<= nxa1; i++){
+    //  for (i=0; i< nxa1; i++){
     mu_b[i][0] = cos(xa1_b[i])*sin(phi_z);
     mu_b[i][1] = sin(xa1_b[i])*sin(phi_z);
     mu_b[i][2] = cos(phi_z);
@@ -668,11 +691,6 @@ double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **m
     mu[i][1] = sin(xa1[i])*sin(phi_z);
     mu[i][2] = cos(phi_z);
   }
-  //wrap around angular dimension. the first angle should be theta=2pi, not theta=0. 
-  //This matters for averaging, otherwise you wont get hte last theta ray
-  //  mu[nxa1-1][0] = cos((xa1[i] + 2*M_PI)/2)*sin(phi_z);
-  //mu[nxa1-1][1] = sin((xa1[i] + 2*M_PI)/2)*sin(phi_z);
-  //mu[nxa1-1][2] = cos(phi_z);
 
   /*------------------CALCULATE QUADRATURE WEIGHTS ------------------- */
   // Should this be proportional to the "size of the cell"?
@@ -699,10 +717,10 @@ double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3){
   double ***a_p = (double ***) malloc(sizeof(double **)*n1);
   double **a_p2 = (double **) malloc(sizeof(double *)*n2*n1);
   for(i=0; i<n1; i++){
-    a_p[i] = &(a_p2[n2*i]);
+    a_p[i] = (double **) malloc(sizeof(double *)*n2); //&(a_p2[n2*n3*i]);
     for (j=0; j< n2; j++){
-      a_p[i][j] = &(a[n2*i + n3*j]);    
+      a_p[i][j] = &(a[n2*n3*i + n3*j]);    
     }
-  }
+  } 
   return(a_p);
 }
