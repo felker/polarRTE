@@ -19,10 +19,10 @@ void vector_physical_to_coordinate(double vx, double vy, double phi, double *vr,
 void velocity_physical(double x_b,double y_b,double *vx,double *vy);
 void velocity_coordinate(double r_b,double phi_b,double *vr,double *vphi);
 double initial_condition(double x, double y, double xa1);
-double bc_x1i(double x, double y);
-double bc_x1f(double x, double y,double t);
-double bc_x2i(double x, double y);
-double bc_x2f(double x, double y);
+double bc_x1i(double x, double y, double xa1, double t);
+double bc_x1f(double x, double y, double xa1, double t);
+double bc_x2i(double x, double y, double xa1, double t);
+double bc_x2f(double x, double y, double xa1, double t);
 double flux_PLM(double ds,double *imu);
 float find_max(float a[], int n);
 float find_min(float a[], int n); 
@@ -35,8 +35,8 @@ double find_max_double(double a[], int n);
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
-  int nsteps=100;
-  double dt =0.08;
+  int nsteps=200;
+  double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
   int nx1 = 50;
@@ -196,44 +196,46 @@ int main(int argc, char **argv){
 
   for(k=ks; k<ke; k++){       
     for(j=js; j<=je; j++){       
-      for(i=is; i<=ie; i++){
-      //radial face i-1/2
-      //velocity_physical(X_physical(x1_b[i],x2_b[j]+dx2/2),Y_physical(x1_b[i],x2_b[j]+dx2/2),&ux,&vy);
-      // Average normal edge velocity: just transform face center velocity to local orthonormal basis? 
-      //vector_physical_to_coordinate(ux,vy,x2_b[j]+dx2/2,&U[i][j],&temp); 
-
-	U[k][j][i] =0.0;
+      for(i=is; i<=ie; i++){//ERROR boundary values not initialized
+	//circular motion test
+	/*	U[k][j][i] =0.0;
 	V[k][j][i] =1.0 *x1[i];
-	W[k][j][i] =0.0;
+	W[k][j][i] =0.0; */
 
-      //phi face j-1/2
-      //velocity_physical(X_physical(x1_b[i]+dx1/2,x2_b[j]),Y_physical(x1_b[i]+dx1/2,x2_b[j]),&ux,&vy);
-      //vector_physical_to_coordinate(ux,vy,x2_b[j],&temp,&V[i][j]); 
-      //???
-      //velocity_coordinate(x1_b[i],x2_b[j],&U[i][j],&V[i][j]);
-
-      //      printf("U,V = %lf,%lf\n",U[i][j],V[i][j]);
+	U[k][j][i] = -1.0; //mu[k][0]; //could use edge velocity with mu_b
+	V[k][j][i] = 0.0; 
+	//	V[k][j][i] = mu[k][1]/kappa[k][j][i]; //using kappa instead of r due to noninitialized ghost cells
+	W[k][j][i] =0.0;// -(pow(sin(xa1[k]),3)/kappa[k][j][i] + 2*pow(mu[k][0],2)*sin(xa1[k]));
+	//	printf("k,j,i = %d,%d,%d U,V,W = %lf,%lf,%lf\n",k,j,i,U[k][j][i],V[k][j][i],W[k][j][i]);
       }
     }
   }  
+  //ERROR: need to pass absolute values to max finder
+  //  printf("max|U| = %lf max|V| = %lf max|W| = %lf\n",find_max_double(dataU,nxa1*nx1*nx2),find_max_double(dataV,nxa1*nx1*nx2),find_max_double(dataW,nxa1*nx1*nx2));
 
   /*Check CFL condition, reset timestep */
   double *datacfl = malloc(sizeof(double)*nxa1*nx2*nx1); 
   double ***cfl_array =  allocate_3D_contiguous(datacfl,nxa1,nx2,nx1);
-
+  
+  //debug:
+  int index=0; 
   for(k=0; k<nxa1; k++){ //based on edge velocities or cell centered u,v?
     for(j=0; j<nx2; j++){
       for(i=0; i<nx1; i++){
 	if (i >=is && i< ie && j >=js && j <je)
 	  cfl_array[k][j][i] = fabs(U[k][j][i])*dt/dx1 + fabs(V[k][j][i])*dt/(x1_b[i]*dx2) + fabs(W[k][j][i])*dt/(x1_b[i]*dxa1); //use boundary radius
+	  //	  printf("i=%d CFL = %lf U =%lf\n",i,cfl_array[k][j][i],U[k][j][i]);	
 	else
 	  cfl_array[k][j][i] =0.0; 
+	datacfl[index] = cfl_array[k][j][i];
+	index++;
       }
     }
   }
 
   //find maximum CFL value in domain
   double  max_cfl = find_max_double(datacfl,nxa1*nx1*nx2); 
+  index =0;
   printf("Largest CFL number = %lf\n",max_cfl); 
   if (max_cfl > CFL || AUTO_TIMESTEP){//reset timestep if needed
     if (max_cfl ==0) //dont divide by 0
@@ -247,12 +249,15 @@ int main(int argc, char **argv){
 	else
 	  cfl_array[k][j][i] =0.0; 
 	}
+	datacfl[index] = cfl_array[k][j][i];
+	index++;
       }
     } 
   }
+  //debug
   max_cfl = find_max_double(datacfl,nxa1*nx1*nx2);
   printf("Largest CFL number = %lf\n",max_cfl); 
-  
+
   /*Conserved variable on the computational coordinate mesh*/
   double *dataI =  malloc(sizeof(double )*nx1*nx2*nxa1);
   double ***I = allocate_3D_contiguous(dataI,nxa1,nx2,nx1); 
@@ -266,13 +271,6 @@ int main(int argc, char **argv){
       }
     }
   }
-  /*  for(k=ks; k<ke; k++){
-    for(j=js; j<je; j++){
-      for(i=is; i<ie; i++){
-	printf("k=%d j=%d i=%d I=%lf\n",k,j,i,I[k][j][i]);
-      }
-    }
-    } */
 
   /* Net fluxes in each dimension at each timestep */
   double U_plus,U_minus,V_plus,V_minus,W_plus,W_minus;
@@ -292,7 +290,7 @@ int main(int argc, char **argv){
   float *pts = (float *) malloc(sizeof(float)*(nx1_r+1)*(nx2_r+1)*(nxa1+1)*3); //check angular dimension size
   //The array should be layed out as (pt(i=0,j=0,k=0), pt(i=1,j=0,k=0), ...
   //pt(i=nI-1,j=0,k=0), pt(i=0,j=1,k=0), ...).
-  int index=0; 
+  index=0; 
   //fake the spatial z-separation in angle 
   double height =0.0;
   for(k=ks; k<=ke; k++){
@@ -357,8 +355,8 @@ int main(int argc, char **argv){
     for(l=0;l<num_ghost; l++){
       for(k=ks;k<ke; k++){
 	for (j=js; j<je; j++){
-	  I[k][j][l] = bc_x1i(x[j][is],y[j][is]);
-	  I[k][j][nx1-1-l] = bc_x1f(x[j][ie-1],y[j][ie-1],n*dt);
+	  I[k][j][l] = bc_x1i(x[j][is],y[j][is],xa1[k],n*dt);
+	  I[k][j][nx1-1-l] = bc_x1f(x[j][ie-1],y[j][ie-1],xa1[k],n*dt);
 	}
 	for (i=is; i<ie; i++){
 	  if(X2_PERIODIC){
@@ -366,14 +364,22 @@ int main(int argc, char **argv){
 	    I[k][nx2-1-l][i] = I[k][js+l][i];
 	  }
 	  else{ 
-	    I[k][l][i] = bc_x2i(x[js][i],y[js][i]);
-	    I[k][nx2-1-l][i] = bc_x2f(x[je-1][i],y[je-1][i]);
+	    I[k][l][i] = bc_x2i(x[js][i],y[js][i],xa1[k],n*dt);
+	    I[k][nx2-1-l][i] = bc_x2f(x[je-1][i],y[je-1][i],xa1[k],n*dt);
 	  }  
 	} 
       }
     }
+    /*  for(k=ks; k<ke; k++){
+    for(j=js; j<je; j++){
+      for(i=is; i<ie; i++){
+	printf("k=%d j=%d i=%d I=%lf\n",k,j,i,I[k][j][i]);
+      }
+    }
+  }
+  return(0); */
 
-
+    int next, prev; //for indexing third dimension
     double flux_limiter =0.0; 
     double *imu = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
     /* Donor cell upwinding */
@@ -384,7 +390,15 @@ int main(int argc, char **argv){
 	  U_plus = fmax(U[k][j][i],0.0); // max{U_{i-1/2,j,m},0.0} LHS boundary
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
-	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i-1],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+
+	  /*	  if (i==is+1 && j==js+6 &&k==ks){
+	    printf("i,j,k=%d,%d,%d kappa[i] = %lf U[i]=%lf U[i+1] = %lf \n",i,j,k,kappa[k][j][i],U[k][j][i],U[k][j][i+1]); //cant dereference I here all of the time
+	    printf("I_{i-1} = %lf I_i = %lf I_{i+1} =%lf\n",I[k][j][i-1],I[k][j][i],I[k][j][i+1]);
+	    printf("F_{i+1/2} = %lf\n",dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])));
+	    printf("F_{i-1/2} = %lf\n",dt/(kappa[k][j][i]*dx1)*(-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i-1],0.0)*I[k][j][i])));
+	    } */
+
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (U[k][j][i+1] > 0.0){ //middle element is always the upwind element
@@ -458,6 +472,24 @@ int main(int argc, char **argv){
 	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j][i])*flux_limiter/2);
 	  //net_flux[i][j] += dt/(kappa[i][j]*dx2)*((1-dt*fabs(V[i][j])/(dx2))*fabs(V[i][j])*flux_limiter/2);
 #endif
+	  /* Third coordinate */
+	  /* Have to manually compute indices due to lack of ghost cells */
+	  /* Fluxes: H_i,j,n+1/2 - H_i,j,n-1/2 */
+	  if (k==(ke-1)){
+	    prev = k-1; 
+	    next = ks;
+	  } 
+	  else if(k==ks){
+	    prev = ke-1;
+	    next=k+1; 
+	  }
+	  else{
+	    prev = k-1;
+	    next = k+1;
+	  }
+	  W_plus = fmax(W[k][j][i],0.0); 
+	  W_minus = fmin(W[next][j][i],0.0); 
+	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]));
 	}
       }
     }
@@ -530,30 +562,30 @@ double Y_physical(double x1, double x2){
 }
 
 double initial_condition(double x, double y, double xa1){
-  if (x >= 1.0 && x <= 2.0 && y >= 1.0 && y <=2.0 && xa1 >= 3*M_PI/2){
+  /*  if (x >= 1.0 && x <= 2.0 && y >= 1.0 && y <=2.0 && xa1 >= 3*M_PI/2){
     return(1.0);
-  }
+    }*/
   return(0.0);
 }
 
 //for 2D polar coordinates:
 //bc at innermost radius
-double bc_x1i(double x, double y){
+double bc_x1i(double x, double y, double xa1, double t){
   return(0.0);
 }
 //bc at outermost radius
-double bc_x1f(double x, double y, double t){
-  if ((x<-1.5) && (x>=-2.0) && (y>1.5) && (y<=2.0)){
+double bc_x1f(double x, double y, double xa1, double t){
+  if ((x>1.5) && (x<=2.0) && (y>1.5) && (y<=2.0) && xa1 >= M_PI/2 && xa1 <= 4*M_PI/3){
     return(1.0);
   }
   return(0.0);
 }
 //bc at phi=0.0
-double bc_x2i(double x, double y){
+double bc_x2i(double x, double y, double xa1, double t){
   return(0.0);
 }
 //bc at phi_final
-double bc_x2f(double x, double y){
+double bc_x2f(double x, double y, double xa1, double t){
   return(0.0);
 }
 
@@ -707,7 +739,7 @@ double **allocate_2D_contiguous(double *a, int n1, int n2){ //this is reordered 
   int i; 
   double **a_p = (double **) malloc(sizeof(double *)*n1);
   for(i=0; i<n1; i++)
-    a_p[i] = &(a[n2*i]);    
+    a_p[i] = malloc(sizeof(double)*n2); //&(a[n2*i]);    
   return(a_p); 
 }
 
@@ -719,7 +751,7 @@ double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3){
   for(i=0; i<n1; i++){
     a_p[i] = (double **) malloc(sizeof(double *)*n2); //&(a_p2[n2*n3*i]);
     for (j=0; j< n2; j++){
-      a_p[i][j] = &(a[n2*n3*i + n3*j]);    
+      a_p[i][j] = malloc(sizeof(double)*n3); //&(a[n2*n3*i + n3*j]);    
     }
   } 
   return(a_p);
