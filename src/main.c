@@ -11,11 +11,31 @@
 #define OUTPUT_INTERVAL 1 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 #undef SECOND_ORDER //flag to turn on van Leer flux limiting
 
+#define ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
+//bounds of outer radial boundary conditions for searchlight (inclusive)
+//SPATIAL POSITIONS
+#define PHI_I M_PI/6
+#define PHI_F M_PI/3
+//MOMENTUM DIRECTIONS IN LOCAL COORDINATE BASIS
+#define XA1_I M_PI
+#define XA1_F 3*M_PI/2 //7*M_PI/6
+
+//momentum directions in global cartesian basis
+
+//it makes sense to define the BC in terms of discrete cartesian bins because they can be represented perfectly. (above isnt discrete...)
+//they may map to continous polar angular bins
+//the same is true vise versa: discrete polar bins map to continuous cartesian angular bins
+#define XA1_I_C 4*M_PI/3
+#define XA1_F_C 3*M_PI/2 //7*M_PI/6
+
+#undef TRASH
+
 double stream_function(double x, double y);
 double X_physical(double, double);
 double Y_physical(double, double);
 void vector_coordinate_to_physical(double vr, double vphi, double phi, double *vx, double *vy);
 void vector_physical_to_coordinate(double vx, double vy, double phi, double *vr, double *vphi);
+double xA_coordinate_to_physical(double xa1, double x2);
 void velocity_physical(double x_b,double y_b,double *vx,double *vy);
 void velocity_coordinate(double r_b,double phi_b,double *vr,double *vphi);
 double initial_condition(double x, double y, double xa1);
@@ -32,18 +52,24 @@ double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **m
 double **allocate_2D_contiguous(double *a, int n1, int n2);
 double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3);
 double find_max_double(double a[], int n);
+float bc_x1f_polar(double phi, double xa1, double t);
+
+double f(double phi, double x, double y, double r_max,double angle_c);
+double df(double phi, double x, double y, double r_max);
+float analytic_solution(double x,double y, double r_max,double angle_c);
+double newton_raphson(double x, double y, double r_max, double angle_c, double x0, double allerr, int maxmitr);
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
-  int nsteps=200;
+  int nsteps=1000;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 50;
-  int nx2 = 50;
+  int nx1 = 200;
+  int nx2 = 200;
 
   /* Angular parameter */
-  int nxa1 = 12; 
+  int nxa1 = 48; 
   double  dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
   double phi_z = M_PI/2; 
 
@@ -193,6 +219,7 @@ int main(int argc, char **argv){
   double ***U = allocate_3D_contiguous(dataU,nxa1,nx2,nx1);
   double ***V = allocate_3D_contiguous(dataV,nxa1,nx2,nx1);
   double ***W = allocate_3D_contiguous(dataW,nxa1,nx2,nx1);
+  double ***source = allocate_3D_contiguous(dataW,nxa1,nx2,nx1);//not using contiguous array right now. debug
 
   for(k=ks; k<ke; k++){       
     for(j=js; j<=je; j++){       
@@ -202,11 +229,12 @@ int main(int argc, char **argv){
 	V[k][j][i] =1.0 *x1[i];
 	W[k][j][i] =0.0; */
 
-	U[k][j][i] = -1.0; //mu[k][0]; //could use edge velocity with mu_b
-	V[k][j][i] = 0.0; 
-	//	V[k][j][i] = mu[k][1]/kappa[k][j][i]; //using kappa instead of r due to noninitialized ghost cells
-	W[k][j][i] =0.0;// -(pow(sin(xa1[k]),3)/kappa[k][j][i] + 2*pow(mu[k][0],2)*sin(xa1[k]));
+	U[k][j][i] = mu[k][0]; //could use edge velocity with mu_b
+	//	V[k][j][i] = 0.0; 
+	V[k][j][i] = mu[k][1]/kappa[k][j][i]; //using kappa instead of r due to noninitialized ghost cells
+	W[k][j][i] = -(pow(sin(xa1[k]),3)/kappa[k][j][i] + 2*pow(mu[k][0],2)*sin(xa1[k]));
 	//	printf("k,j,i = %d,%d,%d U,V,W = %lf,%lf,%lf\n",k,j,i,U[k][j][i],V[k][j][i],W[k][j][i]);
+	source[k][j][i] = (-3/kappa[k][j][i]+4)*pow(mu[k][0],2)*sin(xa1[k]) - 2*pow(mu[k][0],3);
       }
     }
   }  
@@ -327,7 +355,128 @@ int main(int argc, char **argv){
   //                 The size of vars[i] should be npts*vardim[i].
   float *realI; //excludes spatial ghost cells
   realI =(float *) malloc(sizeof(float)*nx1_r*nx2_r*nxa1);//ERROR IN ADVECTION. SIZEOF(DOUBLE)
-  //for now, explicitly copy subarray corresponding to real zonal info:
+  float *vars[] = {(float *) realI, (float *)edge_vel};
+  /*  double maxI[12];
+  for (k=ks; k <ke; k++){ //debug individual angular bins
+    maxI[k] = find_max(realI+(k*nx1_r*nx2_r),nx1_r*nx2_r);
+    printf("%d angular bin theta %lf, max{I} = %lf \n",k,xa1[k],maxI[k]); 
+    } */
+
+#ifdef ANALYTIC_SOLUTION
+  index=0;
+  //  int max_iter =500;
+  //double err_tol = 1e-4;
+  float *realI_cartesian; //excludes spatial ghost cells
+  realI_cartesian =(float *) malloc(sizeof(float)*nx1_r*nx2_r*nxa1);
+
+  double x_source, y_source, slope; 
+  double xa1_source; //polar angular bin from which the hypothetical beam should come from
+  double phi_source; //polar spatial bin from which the hypothetical beam should come from
+  double angle_c; 
+  for (k=ks; k<ke; k++){
+    for (j=js; j<je; j++){
+      for (i=is; i<ie; i++){ //if the center position is in the path?
+	//	phi_source = newton_raphson(x[j][i], y[j][i], x1_b[ie],xa1[k], M_PI, err_tol,max_iter);
+	//	printf("x,y = %lf,%lf theta = %lf \n",x[j][i],y[j][i],xa1[k]);
+	angle_c = xa1[k]; 
+	//	propagation is restricted to z/angular planes in cartesian
+	if(angle_c >=XA1_I_C && angle_c <= XA1_F_C){
+	  slope = tan(angle_c);
+	  if ((y[j][i] <= slope*(x[j][i] - x1_b[ie]*cos(PHI_F)) + x1_b[ie]*sin(PHI_F)) &&
+	      (y[j][i] >= slope*(x[j][i] - x1_b[ie]*cos(PHI_I)) + x1_b[ie]*sin(PHI_I)))
+	  realI_cartesian[index] = 1.0; 
+	}
+	else{
+	  realI_cartesian[index] = 0.0; 
+	}
+	index++; 
+
+ 
+#ifdef TRASH
+	if (fmod(angle_c, M_PI/2) !=0.0){
+	  slope = tan(angle_c); 
+	  if (angle_c > M_PI/2 && angle_c < 3*M_PI/2){ // rays coming from right hemisphere,more positive x
+	    // take larger root
+	    x_source = (-2*(slope*y[j][i] -2*x[j][i]*slope*slope) + sqrt(4*pow((slope*y[j][i] -2*x[j][i]*slope*slope),2) - 4*(slope*slope +1)*(slope*slope*x[j][i]*x[j][i] - 2*slope*y[j][i]*x[j][i] + y[j][i]*y[j][i] - pow(x1_b[ie],2))))/(2*slope*slope +2); 
+	    //	    y_source = slope*(x_source - x[j][i]) + y[j][i]; 
+	    y_source = sqrt(x1_b[ie]*x1_b[ie] - x_source*x_source); 
+	  }
+	  else{ // rays coming from left hemisphere, smaller x //the root should always be real
+	    // take smaller root
+	    x_source = (-2*(slope*y[j][i] -2*x[j][i]*slope*slope) - sqrt(4*pow((slope*y[j][i] -2*x[j][i]*slope*slope),2) - 4*(slope*slope +1)*(slope*slope*x[j][i]*x[j][i] - 2*slope*y[j][i]*x[j][i] + y[j][i]*y[j][i] - pow(x1_b[ie],2))))/(2*slope*slope +2); 
+	    //	    y_source = slope*(x_source - x[j][i]) + y[j][i]; 
+	    y_source = sqrt(x1_b[ie]*x1_b[ie] - x_source*x_source); 
+	  }
+	  if ((y_source*y_source + x_source*x_source) != x1_b[ie]*x1_b[ie]){
+	    printf("source point is not on the circle!\n");
+	    printf("x,y = %lf,%lf theta = %lf rmax = %lf\n",x[j][i],y[j][i],xa1[k],x1_b[ie]);
+	    printf("x_s,y_s = %lf,%lf slope =%lf\n",x_source,y_source,slope);
+	    printf("phi = %lf xa1_polar = %lf I = %lf\n",phi_source,xa1_source,realI[index]);
+	    printf("root1 = %lf root2 = %lf\n",(-2*(slope*y[j][i] -2*x[j][i]*slope*slope) + sqrt(4*pow((slope*y[j][i] -2*x[j][i]*slope*slope),2) - 4*(slope*slope +1)*(slope*slope*x[j][i]*x[j][i] - 2*slope*y[j][i]*x[j][i] + y[j][i]*y[j][i] - pow(x1_b[ie],2))))/(2*slope*slope +2),(-2*(slope*y[j][i] -2*x[j][i]*slope*slope) -sqrt(4*pow((slope*y[j][i] -2*x[j][i]*slope*slope),2) - 4*(slope*slope +1)*(slope*slope*x[j][i]*x[j][i] - 2*slope*y[j][i]*x[j][i] + y[j][i]*y[j][i] - pow(x1_b[ie],2))))/(2*slope*slope +2));
+	    return(1);
+	  
+	  }
+	}
+	else if (angle_c == 0.0 || angle_c == 2*M_PI) { //horizontal from the left
+	  y_source = y[j][i]; 
+	  x_source = -sqrt(pow(x1_b[ie],2) - pow(y_source,2));
+	}
+	else if (angle_c == M_PI) { //horizontal from the right
+	  y_source = y[j][i]; 
+	  x_source = +sqrt(pow(x1_b[ie],2) - pow(y_source,2));
+	}
+	else if (angle_c == M_PI/2){ //vertical line from the bottom
+	  x_source = x[j][i];
+	  y_source = -sqrt(pow(x1_b[ie],2) - pow(x_source,2));
+	}
+	else if (angle_c == 3*M_PI/2){ //vertical line from the top
+	  x_source = x[j][i];
+	  y_source = +sqrt(pow(x1_b[ie],2) - pow(x_source,2));
+	}
+	phi_source = atan2(y_source,x_source) + M_PI;  
+	xa1_source = fmod(angle_c - phi_source+2*M_PI,2*M_PI); //angle_c is [0,2pi). phi_source is [0,2pi); 
+	if (phi_source > PHI_I && phi_source <= PHI_F && xa1_source > XA1_I && xa1_source <= XA1_F)
+	  realI[index] = 1.0; 
+	else 
+	  realI[index] = 0.0; 
+	printf("x,y = %lf,%lf theta = %lf rmax = %lf\n",x[j][i],y[j][i],xa1[k],x1_b[ie]);
+	printf("x_s,y_s = %lf,%lf slope =%lf\n",x_source,y_source,slope);
+	printf("phi = %lf xa1_polar = %lf I = %lf\n",phi_source,xa1_source,realI[index]);
+	index++;
+#endif TRASH
+	//	if (phi_source != phi_source){ // nan
+	//
+	// return(1);
+	//}
+	//	realI[index] = analytic_solution(x[j][i],y[j][i],x1_b[ie],xa1[k] + x2[j]);
+      }
+    }
+  }
+  /*Transform analytic solution from cartesian basis to polar basis */
+  /*one issue is that discrete angular representation of cartesian solution maps to continuous polar angular representation */
+  //just place all intensity in corresponding bin.
+
+  for (k=0; k<nxa1; k++){ //loop over cartesian angular bins
+    for (j=0; j<nx2_r; j++){
+      for (i=0; i<nx1_r; i++){ 
+	phi_source = x2[j+num_ghost]; 
+	xa1_source = fmod(xa1[k]- phi_source+2*M_PI,2*M_PI); //find corresponding polar angular bin
+	for (l=ks; l<ke; l++){
+	  if (xa1_source >= xa1_b[l] && xa1_source <= xa1_b[l+1]){
+	    /*	    printf("%d\n",nx1_r*nx2_r*l + nx1_r*j + i);
+	    printf("%d\n",nx1_r*nx2_r*k + nx1_r*j + i);
+	    printf("%d %d %d\n",k,j,i); */
+	    realI[nx1_r*nx2_r*l + nx1_r*j + i] += realI_cartesian[nx1_r*nx2_r*k + nx1_r*j + i];}
+	}
+      }
+    }
+  }
+
+  sprintf(filename,"analytic-rte.vtk"); 
+  write_curvilinear_mesh(filename,1,dims, pts, nvars,vardims, centering, varnames, vars);
+  return(0);
+#endif
+  /* Output initial condition */
   index=0; 
   for (k=ks; k<ke; k++){
     for (j=js; j<je; j++){
@@ -337,14 +486,8 @@ int main(int argc, char **argv){
       }
     }
   }
-  float *vars[] = {(float *) realI, (float *)edge_vel};
   sprintf(filename,"rte-000.vtk"); 
   write_curvilinear_mesh(filename,1,dims, pts, nvars,vardims, centering, varnames, vars);
-  /*  double maxI[12];
-  for (k=ks; k <ke; k++){
-    maxI[k] = find_max(realI+(k*nx1_r*nx2_r),nx1_r*nx2_r);
-    printf("%d angular bin theta %lf, max{I} = %lf \n",k,xa1[k],maxI[k]); 
-    } */
 
   /*-----------------------*/
   /* Main timestepping loop */
@@ -356,7 +499,8 @@ int main(int argc, char **argv){
       for(k=ks;k<ke; k++){
 	for (j=js; j<je; j++){
 	  I[k][j][l] = bc_x1i(x[j][is],y[j][is],xa1[k],n*dt);
-	  I[k][j][nx1-1-l] = bc_x1f(x[j][ie-1],y[j][ie-1],xa1[k],n*dt);
+	  I[k][j][nx1-1-l] = (double) bc_x1f_polar(x2[j], xa1[k], n*dt);
+	  //	  I[k][j][nx1-1-l] = bc_x1f(x[j][ie-1],y[j][ie-1],xa1[k],n*dt);
 	}
 	for (i=is; i<ie; i++){
 	  if(X2_PERIODIC){
@@ -489,7 +633,7 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
-	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]));
 	}
       }
     }
@@ -507,6 +651,7 @@ int main(int argc, char **argv){
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
 	  for (i=is; i<ie; i++){
+	    I[k][j][i] -= source[k][j][i]*I[k][j][i]*dt;
 	  }
 	}
       }
@@ -575,11 +720,20 @@ double bc_x1i(double x, double y, double xa1, double t){
 }
 //bc at outermost radius
 double bc_x1f(double x, double y, double xa1, double t){
-  if ((x>1.5) && (x<=2.0) && (y>1.5) && (y<=2.0) && xa1 >= M_PI/2 && xa1 <= 4*M_PI/3){
+  if ((x>1.5) && (x<=2.0) && (y>1.5) && (y<=2.0) && xa1 >= XA1_I && xa1 <= XA1_F ){
     return(1.0);
   }
   return(0.0);
 }
+//this bc is specified in terms of polar coordinates
+float bc_x1f_polar(double phi, double xa1, double t){
+  //  if (phi >= PHI_I && phi <= PHI_F && xa1 >= XA1_I && xa1 <= XA1_F )
+  //specify in terms of Cartesian angles
+  if (phi >= PHI_I && phi <= PHI_F && xA_coordinate_to_physical(xa1, phi) >= XA1_I_C && xA_coordinate_to_physical(xa1, phi) <= XA1_F_C )
+    return(1.0);
+  return(0.0);
+}
+
 //bc at phi=0.0
 double bc_x2i(double x, double y, double xa1, double t){
   return(0.0);
@@ -706,6 +860,7 @@ double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **m
   for (i=1; i<nxa1; i++){
     xa1_b[i] = xa1_b[i-1] + dxa1; 
     xa1[i] = xa1[i-1] + dxa1; 
+
   }
 
   //add another boundary ray for purposes of VTK output
@@ -756,3 +911,41 @@ double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3){
   } 
   return(a_p);
 }
+
+float analytic_solution(double x,double y, double angle_c, double r_max){ //true radius, not cell centered r
+  //is there a way to do this without ray tracing?
+
+  //worry about the donut hole?
+
+  //nonlinear root finding
+
+			    
+  return(0.0);
+}
+
+double newton_raphson(double x, double y, double r_max, double angle_c, double x0, double allerr, int maxmitr){ //later add general function pointers
+  int itr; 
+  double h, x1;
+  for (itr=1; itr<=maxmitr; itr++){
+    h=f(x0,x,y,angle_c,r_max)/df(x0,x,y,r_max);
+    x1=x0-h;
+    if (fabs(h) < allerr)
+      return x1;
+    x0=x1;
+    //    printf("phi = %lf\n",x0);
+  }
+  printf(" The required solution does not converge or iterations are insufficient\n");
+  return 1;
+} 
+
+double f(double phi, double x, double y,double r_max, double angle_c){
+  return tan(angle_c) - (y-r_max*sin(phi))/(x-r_max*cos(phi)); 
+}
+
+double df(double phi, double x, double y, double r_max){
+  return r_max*cos(phi)/(x-r_max*cos(phi)) - (r_max*sin(phi)*(r_max*sin(phi)-y))/pow((x-r_max*cos(phi)),2);
+}
+
+double xA_coordinate_to_physical(double xa1, double x2){
+  return fmod(xa1 + x2,2*M_PI);
+} 
