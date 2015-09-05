@@ -8,7 +8,8 @@
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 1 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+
 #undef SECOND_ORDER //flag to turn on van Leer flux limiting
 
 #define ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
@@ -33,8 +34,8 @@
 double stream_function(double x, double y);
 double X_physical(double, double);
 double Y_physical(double, double);
-void vector_coordinate_to_physical(double vr, double vphi, double phi, double *vx, double *vy);
-void vector_physical_to_coordinate(double vx, double vy, double phi, double *vr, double *vphi);
+void vector_coordinate_to_physical(double vr, double vphi, double vphase, double phi, double r, double *vx, double *vy, double *vz);
+void vector_physical_to_coordinate(double vx, double vy, double phi, double r, double *vr, double *vphi);
 double xA_coordinate_to_physical(double xa1, double x2);
 void velocity_physical(double x_b,double y_b,double *vx,double *vy);
 void velocity_coordinate(double r_b,double phi_b,double *vr,double *vphi);
@@ -61,15 +62,15 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
-  int nsteps=1000;
+  int nsteps=4800;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 200;
-  int nx2 = 200;
+  int nx1 = 400;
+  int nx2 = 400;
 
   /* Angular parameter */
-  int nxa1 = 48; 
+  int nxa1 = 400;
   double  dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
   double phi_z = M_PI/2; 
 
@@ -133,6 +134,11 @@ int main(int argc, char **argv){
     //printf("%lf\n",x2[i]);
   } 
 
+  if(X2_PERIODIC){//duplicate the phis at the edges of circle for easy peridoicity 
+    x2[js-1] = x2[je-1];
+    x2[je] = x2[js];
+  }
+    
   /*Mesh edge (nodal) values of computational coordinate position */
   double *x1_b = (double *) malloc(sizeof(double)*(nx1+1)); 
   double *x2_b = (double *) malloc(sizeof(double)*(nx2+1));
@@ -177,30 +183,30 @@ int main(int argc, char **argv){
       y_b[j][i] = Y_physical(x1_b[i],x2_b[j]); 
     }
   }
-  /*Edge normal vectors in Cartesian coordinates */
-  // point radially outward and +\phi
   
-
   /*Coordinate cell capacity */
   double *datakappa= (double *) malloc(sizeof(double)*nx1*nx2*nxa1);
   double ***kappa = allocate_3D_contiguous(datakappa,nxa1,nx2,nx1); 
-  for(k=ks; k<ke; k++){
-    for(j=js; j<je; j++){
-      for(i=is; i<ie; i++){
-	kappa[k][j][i] = x1[i]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
-	//capacity in ghost cells
-	kappa[k][je][i] = (x1[i])*dx1*dx2*dxa1/(dx1*dx2*dxa1); //this might be wrong in advection code
-      }
-      kappa[k][j][ie] = (x1[ie-1]+dx1)*dx1*dx2*dxa1/(dx1*dx2*dxa1); 
-    }
-    kappa[k][je][ie] = (x1[i-1]+dx1)*dx1*dx2*dxa1/(dx1*dx2*dxa1); 
-  }
 
+  //cell centered velocities require the ability to access is-1,js-1
+  //  x1[is-1] = x1[is] - dx1; //only works if dx1 < 0.5
+  for(k=ks; k<ke; k++){
+    for(j=js-1; j<=je; j++){
+      for(i=is-1; i<=ie; i++){
+	if (i==ie)
+	  kappa[k][j][i] = x1[ie-1]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
+	else if (i==(is-1))
+	  kappa[k][j][i] = x1[is]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
+	else
+	  kappa[k][j][i] = x1[i]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
+      }
+    }
+  } 
   /*Discretize photon directions */
   double *xa1 = (double *) malloc(sizeof(double)*nxa1); 
   double *xa1_b = (double *) malloc(sizeof(double)*(nxa1+1)); 
   double *datamu = (double *) malloc(sizeof(double)*nxa1*3); 
-  double *datamu_b = (double *) malloc(sizeof(double )*3*nxa1);//identify with left and bottom boundaries 
+  double *datamu_b = (double *) malloc(sizeof(double )*3*(nxa1+1));//identify with left and bottom boundaries 
   double *pw = (double *) malloc(sizeof(double)*nxa1); 
   double **mu = allocate_2D_contiguous(datamu,nxa1,3); //CONVENTION: xa1 is the first dimension, component is second dim 
   //  double **mu_b = allocate_2D_contiguous(datamu_b,nxa1,3); 
@@ -216,28 +222,45 @@ int main(int argc, char **argv){
   double *dataW = malloc(sizeof(double)*nxa1*nx2*nx1);
 
   double ux,vy,wz,temp; 
-  double ***U = allocate_3D_contiguous(dataU,nxa1,nx2,nx1);
-  double ***V = allocate_3D_contiguous(dataV,nxa1,nx2,nx1);
-  double ***W = allocate_3D_contiguous(dataW,nxa1,nx2,nx1);
-  double ***source = allocate_3D_contiguous(dataW,nxa1,nx2,nx1);//not using contiguous array right now. debug
+  double ***U = allocate_3D_contiguous(dataU,nxa1+1,nx2,nx1);
+  double ***V = allocate_3D_contiguous(dataV,nxa1+1,nx2,nx1);
+  double ***W = allocate_3D_contiguous(dataW,nxa1+1,nx2,nx1);
+  double ***source = allocate_3D_contiguous(dataW,nxa1+1,nx2,nx1);//not using contiguous array right now. debug
 
+  //double check k=ke boundary value
+  //for jims notation, we still consider these as cell centered values. Need to be able to reference is-1
+  //why? also not sure if kappa[js-1][is-1] is fine
   for(k=ks; k<ke; k++){       
-    for(j=js; j<=je; j++){       
-      for(i=is; i<=ie; i++){//ERROR boundary values not initialized
+    for(j=js-1; j<=je; j++){       
+      for(i=is-1; i<=ie; i++){//ERROR boundary values not initialized
 	//circular motion test
 	/*	U[k][j][i] =0.0;
 	V[k][j][i] =1.0 *x1[i];
 	W[k][j][i] =0.0; */
-
-	U[k][j][i] = mu[k][0]; //could use edge velocity with mu_b
-	//	V[k][j][i] = 0.0; 
-	V[k][j][i] = mu[k][1]/kappa[k][j][i]; //using kappa instead of r due to noninitialized ghost cells
-	W[k][j][i] = -(pow(sin(xa1[k]),3)/kappa[k][j][i] + 2*pow(mu[k][0],2)*sin(xa1[k]));
-	//	printf("k,j,i = %d,%d,%d U,V,W = %lf,%lf,%lf\n",k,j,i,U[k][j][i],V[k][j][i],W[k][j][i]);
-	source[k][j][i] = (-3/kappa[k][j][i]+4)*pow(mu[k][0],2)*sin(xa1[k]) - 2*pow(mu[k][0],3);
+	
+	U[k][j][i] = mu[k][0];
+	V[k][j][i] = mu[k][1];
+	//V[k][j][i] = mu[k][1]/kappa[k][j][i];
+	W[k][j][i] = -mu[k][1]/kappa[k][j][i];
+	//	W[k][j][i] = -(pow(mu[k][1],3)+ 2*mu[k][1]*pow(mu[k][0],2))/kappa[k][j][i];
+	source[k][j][i] = 0.0;
       }
     }
   }  
+
+  k=ke; //final boundary is periodic 
+    for(j=js; j<=je; j++){       
+      for(i=is; i<=ie; i++){//ERROR boundary values not initialized
+	U[k][j][i] = mu[0][0];
+	V[k][j][i] = mu[0][1];
+	//V[k][j][i] = mu[0][1]/kappa[ks][j][i];
+	W[k][j][i] = -mu[0][1]/kappa[ks][j][i];
+	//	W[k][j][i] = -(pow(mu[0][1],3)+ 2*mu[0][1]*pow(mu[0][0],2))/kappa[0][j][i];
+	source[k][j][i] = 0.0;    
+
+      }
+    }
+
   //ERROR: need to pass absolute values to max finder
   //  printf("max|U| = %lf max|V| = %lf max|W| = %lf\n",find_max_double(dataU,nxa1*nx1*nx2),find_max_double(dataV,nxa1*nx1*nx2),find_max_double(dataW,nxa1*nx1*nx2));
 
@@ -247,6 +270,8 @@ int main(int argc, char **argv){
   
   //debug:
   int index=0; 
+  int indexJ;   /* for computing zeroth angular moment of the radiation field*/
+
   for(k=0; k<nxa1; k++){ //based on edge velocities or cell centered u,v?
     for(j=0; j<nx2; j++){
       for(i=0; i<nx1; i++){
@@ -309,28 +334,25 @@ int main(int argc, char **argv){
   char filename[20];
   /*CONVENTION: simply make angular dimension the third spatial dimension for now. Later may want to create separate variables */
   int dims[] = {nx1_r+1, nx2_r+1, nxa1+1}; //dont output ghost cells. //nodal variables have extra edge point
-  int nvars = 2;
-  int vardims[] = {1, 3}; //Q is a scalar, velocity is a 3-vector 
-  int centering[] = {0, 1}; // Q is cell centered, velocity is defined at edges
-  const char *varnames[] = {"I", "edge_velocity"};
+  int nvars = 3;
+  int vardims[] = {1, 1, 3}; //I is a scalar, J is a scalar, velocity is a 3-vector 
+  int centering[] = {0, 0, 1}; // I,J are cell centered, velocity is defined at edges
+  const char *varnames[] = {"I","J", "edge_velocity"};
   /* Curvilinear mesh points stored x0,y0,z0,x1,y1,z1,...*/
   //An array of size nI*nJ*nK*3 . These points are nodal, not zonal
   float *pts = (float *) malloc(sizeof(float)*(nx1_r+1)*(nx2_r+1)*(nxa1+1)*3); //check angular dimension size
   //The array should be layed out as (pt(i=0,j=0,k=0), pt(i=1,j=0,k=0), ...
   //pt(i=nI-1,j=0,k=0), pt(i=0,j=1,k=0), ...).
   index=0; 
-  //fake the spatial z-separation in angle 
-  double height =0.0;
   for(k=ks; k<=ke; k++){
     for(j=js; j<=je; j++){
       for(i=is; i<=ie; i++){
 	pts[index] = x_b[j][i];
 	pts[++index] = y_b[j][i];
-	pts[++index] = xa1_b[k]; //height;
+	pts[++index] = xa1_b[k]; 
 	index++;
       }
     }
-    height += 1.0;
   }
   
   /* pack U,V,W into a vector */
@@ -339,10 +361,16 @@ int main(int argc, char **argv){
   for(k=ks; k<=ke; k++){
     for(j=js; j<=je; j++){ //ERROR: j=je ghost cells are messed up since U,V,W arent initialized that far
       for(i=is; i<=ie; i++){
-	//	vector_coordinate_to_physical(U[i][j],V[i][j], x2[j], &ux,&vy);
-	//edge_vel[index] = U[k][j][i];
-	//edge_vel[++index] = V[k][j][i]; 
-	//edge_vel[++index] = W[k][j][i]; 
+
+	//	if (j==je)
+	//vector_coordinate_to_physical(U[k][j][i],V[k][j][i],W[k][j][i],x2_b[0],&ux,&vy,&wz);
+	//else
+	vector_coordinate_to_physical(U[k][j][i],V[k][j][i],W[k][j][i],x2_b[j],x1_b[i],&ux,&vy,&wz);
+	//	printf("k,j,i =%d,%d,%d \n",k,j,i);
+        //printf("U,V,W = %lf,%lf,%lf\n",U[k][j][i],V[k][j][i],W[k][j][i]);/*
+	/*edge_vel[index] = U[k][j][i];
+	edge_vel[++index] = V[k][j][i]; 
+	edge_vel[++index] = W[k][j][i]; */
 	edge_vel[index] = ux;
 	edge_vel[++index] = vy;
 	edge_vel[++index] = wz;
@@ -353,14 +381,16 @@ int main(int argc, char **argv){
 
   //  vars       An array of variables.  The size of vars should be nvars.
   //                 The size of vars[i] should be npts*vardim[i].
-  float *realI; //excludes spatial ghost cells
+  float *realI, *realJ; //excludes spatial ghost cells
   realI =(float *) malloc(sizeof(float)*nx1_r*nx2_r*nxa1);//ERROR IN ADVECTION. SIZEOF(DOUBLE)
-  float *vars[] = {(float *) realI, (float *)edge_vel};
+  realJ =(float *) malloc(sizeof(float)*nx1_r*nx2_r*nxa1); //unfortunately, if it lives on the same 3D mesh, must be duplicated at each z/nxa1 height
+  float *vars[] = {(float *) realI,(float *) realJ, (float *)edge_vel};
   /*  double maxI[12];
   for (k=ks; k <ke; k++){ //debug individual angular bins
     maxI[k] = find_max(realI+(k*nx1_r*nx2_r),nx1_r*nx2_r);
     printf("%d angular bin theta %lf, max{I} = %lf \n",k,xa1[k],maxI[k]); 
     } */
+
 
 #ifdef ANALYTIC_SOLUTION
   index=0;
@@ -463,14 +493,43 @@ int main(int argc, char **argv){
 	xa1_source = fmod(xa1[k]- phi_source+2*M_PI,2*M_PI); //find corresponding polar angular bin
 	for (l=ks; l<ke; l++){
 	  if (xa1_source >= xa1_b[l] && xa1_source <= xa1_b[l+1]){
-	    /*	    printf("%d\n",nx1_r*nx2_r*l + nx1_r*j + i);
-	    printf("%d\n",nx1_r*nx2_r*k + nx1_r*j + i);
-	    printf("%d %d %d\n",k,j,i); */
 	    realI[nx1_r*nx2_r*l + nx1_r*j + i] += realI_cartesian[nx1_r*nx2_r*k + nx1_r*j + i];}
 	}
       }
     }
   }
+  /* Compute zeroth moment of radiation field */
+  //zero out J array:
+  indexJ=0;
+  for (j=0; j<nx2_r; j++){
+    for (i=0; i<nx1_r; i++){
+      realJ[indexJ] = 0;
+      indexJ++;
+    }
+  }
+  index =0; 
+  for (k=ks; k<ke; k++){
+    indexJ=0; 
+    for (j=js; j<je; j++){
+      for (i=is; i<ie; i++){
+	realJ[indexJ] += (float) realI[index]/nxa1;
+	indexJ++;
+	index++;
+      }
+    }
+  }
+  /* Copy the radiation energy field from first angular bin to all angular bins */
+  indexJ=nx1_r*nx2_r; 
+  for (k=ks+1; k<ke; k++){
+    for (j=0; j<nx2_r; j++){
+      for (i=0; i<nx1_r; i++){
+	realJ[indexJ] = realJ[j*nx1_r+i]; 
+	indexJ++;
+      }
+    }
+  }
+  /* uncomment next line for outputting analytic solution in cartesian basis */
+  //  vars[0] = (float *) realI_cartesian;
 
   sprintf(filename,"analytic-rte.vtk"); 
   write_curvilinear_mesh(filename,1,dims, pts, nvars,vardims, centering, varnames, vars);
@@ -478,11 +537,32 @@ int main(int argc, char **argv){
 #endif
   /* Output initial condition */
   index=0; 
+  //zero out J array:
+  indexJ=0;
+  for (j=0; j<nx2_r; j++){
+    for (i=0; i<nx1_r; i++){
+      realJ[indexJ] = 0;
+      indexJ++;
+    }
+  }
   for (k=ks; k<ke; k++){
+    indexJ=0; 
     for (j=js; j<je; j++){
       for (i=is; i<ie; i++){
 	realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
+	realJ[indexJ] += (float) I[k][j][i]/nxa1;
 	index++;
+	indexJ++;
+      }
+    }
+  }
+  /* Copy the radiation energy field from first angular bin to all angular bins */
+  indexJ=nx1_r*nx2_r; 
+  for (k=ks+1; k<ke; k++){
+    for (j=0; j<nx2_r; j++){
+      for (i=0; i<nx1_r; i++){
+	realJ[indexJ] = realJ[j*nx1_r+i]; 
+	indexJ++;
       }
     }
   }
@@ -535,6 +615,10 @@ int main(int argc, char **argv){
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
 	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+	  //jims formulation
+	  //	  net_flux[k][j][i] = (4*dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i])))/(x1_b[i]*x1_b[i] + x1_b[i+1]*x1_b[i+1]); 
+	  //	  net_flux[k][j][i] = (dt/(kappa[k][j][i]*kappa[k][j][i]*dx1)*(x1_b[i+1]*x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i])));
+
 
 	  /*	  if (i==is+1 && j==js+6 &&k==ks){
 	    printf("i,j,k=%d,%d,%d kappa[i] = %lf U[i]=%lf U[i+1] = %lf \n",i,j,k,kappa[k][j][i],U[k][j][i],U[k][j][i+1]); //cant dereference I here all of the time
@@ -583,6 +667,7 @@ int main(int argc, char **argv){
 	  V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundary
 	  /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
 	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
+
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (V[k][j+1][i] > 0.0){
@@ -633,7 +718,11 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  //Jims notation
+	  //  net_flux[k][j][i] += 2*dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(- cos(xa1_b[k]) - cos(xa1_b[next]));
+	  //	  net_flux[k][j][i] += 2*dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(-cos(xa1_b[k]) - cos(xa1_b[next]));
+	  //	  net_flux[k][j][i] += dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(sin(xa1[k])*kappa[k][j][i]); 
 	}
       }
     }
@@ -651,7 +740,7 @@ int main(int argc, char **argv){
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
 	  for (i=is; i<ie; i++){
-	    I[k][j][i] -= source[k][j][i]*I[k][j][i]*dt;
+	    I[k][j][i] += source[k][j][i]*I[k][j][i]*dt;
 	  }
 	}
       }
@@ -659,15 +748,39 @@ int main(int argc, char **argv){
     /*Output */
     //for now, explicitly copy subarray corresponding to real zonal info:
     index=0; 
+    //zero out J array:
+    indexJ=0;
+    for (j=0; j<nx2_r; j++){
+      for (i=0; i<nx1_r; i++){
+	realJ[indexJ] = 0;
+	indexJ++;
+      }
+    }
+
     for (k=ks; k<ke; k++){
+      indexJ =0; 
       for (j=js; j<je; j++){
 	for (i=is; i<ie; i++){
 	  //index =(j-num_ghost)*nx2_r + (i-num_ghost); 
 	  realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
+	  /*compute zeroth angular moment of the radiation field*/
+	  realJ[indexJ] += (float) I[k][j][i]/nxa1;
+	  indexJ++; 
 	  index++;
 	}
       }
     }
+    /* Copy the radiation energy field from first angular bin to all angular bins */
+    indexJ=nx1_r*nx2_r; 
+    for (k=ks+1; k<ke; k++){
+      for (j=0; j<nx2_r; j++){
+	for (i=0; i<nx1_r; i++){
+	  realJ[indexJ] = realJ[j*nx1_r+i]; 
+	  indexJ++;
+	}
+      }
+    }
+    
     //debug only horizontal flow
     /*    if (find_max(realI,nx1_r*nx2_r) > 1.1){
       printf("I greater than 1.0!\n"); 
@@ -796,25 +909,24 @@ float sum(float a[], int n) {
 }
 
 /*Transform polar vector (i.e. edge velocity) from orthonormal local basis to physical basis */
-void vector_coordinate_to_physical(double vr, double vphi, double phi, double *vx, double *vy){
-  *vx = vr*cos(phi) -sin(phi)*vphi; 
-  *vy = vr*sin(phi) +cos(phi)*vphi; 
+void vector_coordinate_to_physical(double vr, double vphi, double vphase, double phi, double r, double *vx, double *vy, double *vz){
+  *vx = vr*cos(phi) -sin(phi)*vphi*r; 
+  *vy = vr*sin(phi) +cos(phi)*vphi*r; 
+  *vz = vphase; 
   return;
 }
 
 /*Transform Cartesian vector to orthonormal local basis */
-void vector_physical_to_coordinate(double vx, double vy, double phi, double *vr, double *vphi){
+void vector_physical_to_coordinate(double vx, double vy, double phi, double r, double *vr, double *vphi){
   *vr = vx*cos(phi) +sin(phi)*vy; 
-  *vphi = -vx*sin(phi) +cos(phi)*vy; 
+  *vphi = (-vx*sin(phi) +cos(phi)*vy)/r; 
   return;
 }
-/* VELOCITY OPTIONS: PICK ONLY ONE */
-void velocity_physical(double x_b,double y_b,double *vx,double *vy){
 
+void velocity_physical(double x_b,double y_b,double *vx,double *vy){
   double angle = atan2(y_b,x_b); 
   *vx = -cos(angle);
   *vy = -sin(angle);
-
   return; 
 }
 
