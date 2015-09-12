@@ -8,26 +8,35 @@
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define OUTPUT_INTERVAL 1 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
-#undef SECOND_ORDER //flag to turn on van Leer flux limiting
+#define SECOND_ORDER //flag to turn on van Leer flux limiting
 
 #define ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
 //bounds of outer radial boundary conditions for searchlight (inclusive)
 //SPATIAL POSITIONS
 #define PHI_I M_PI/6
-#define PHI_F M_PI/3
+#define PHI_F M_PI/3 /*
+#define PHI_I 3*M_PI/4
+#define PHI_F 5*M_PI/6 
+		     */
+
 //MOMENTUM DIRECTIONS IN LOCAL COORDINATE BASIS
+//NOT USED!
 #define XA1_I M_PI
-#define XA1_F 3*M_PI/2 //7*M_PI/6
+#define XA1_F 3*M_PI/2 //7*M_PI/6 
 
 //momentum directions in global cartesian basis
 
-//it makes sense to define the BC in terms of discrete cartesian bins because they can be represented perfectly. (above isnt discrete...)
+//it makes sense to define the BC in terms of discrete cartesian bins because they can be represented perfectly as a discrete approximation to a continuous angular progile.
+//however, this assumes a continuous range of angles (XA1_I_C != XA1_F_C). Sample angle for a bin must fall in this range. In the future, we should do the overlap of the solid angle range with the boundary condition
+
 //they may map to continous polar angular bins
 //the same is true vise versa: discrete polar bins map to continuous cartesian angular bins
 #define XA1_I_C 4*M_PI/3
 #define XA1_F_C 3*M_PI/2 //7*M_PI/6
+
+#undef DELTA_ANGLE_C 0 //turn flag on if you want to use a single cartesian direction 
 
 #undef TRASH
 
@@ -55,6 +64,10 @@ double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3);
 double find_max_double(double a[], int n);
 float bc_x1f_polar(double phi, double xa1, double t);
 
+#ifdef DELTA_ANGLE_C
+float bc_x1f_polar_delta(double phi, double xa1_i, double xa1_f, double dxa1, double t);
+#endif
+
 double f(double phi, double x, double y, double r_max,double angle_c);
 double df(double phi, double x, double y, double r_max);
 float analytic_solution(double x,double y, double r_max,double angle_c);
@@ -62,15 +75,15 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
-  int nsteps=4800;
+  int nsteps=600;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 400;
-  int nx2 = 400;
+  int nx1 = 50;
+  int nx2 = 50;
 
   /* Angular parameter */
-  int nxa1 = 400;
+  int nxa1 = 50;
   double  dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
   double phi_z = M_PI/2; 
 
@@ -230,14 +243,13 @@ int main(int argc, char **argv){
   //double check k=ke boundary value
   //for jims notation, we still consider these as cell centered values. Need to be able to reference is-1
   //why? also not sure if kappa[js-1][is-1] is fine
-  for(k=ks; k<ke; k++){       
+  for(k=ks; k<ke; k++){    
     for(j=js-1; j<=je; j++){       
       for(i=is-1; i<=ie; i++){//ERROR boundary values not initialized
 	//circular motion test
 	/*	U[k][j][i] =0.0;
 	V[k][j][i] =1.0 *x1[i];
 	W[k][j][i] =0.0; */
-	
 	U[k][j][i] = mu[k][0];
 	V[k][j][i] = mu[k][1];
 	//V[k][j][i] = mu[k][1]/kappa[k][j][i];
@@ -410,17 +422,31 @@ int main(int argc, char **argv){
 	//	printf("x,y = %lf,%lf theta = %lf \n",x[j][i],y[j][i],xa1[k]);
 	angle_c = xa1[k]; 
 	//	propagation is restricted to z/angular planes in cartesian
+#if defined(DELTA_ANGLE_C)
+	if (fmod(fabs(DELTA_ANGLE_C - xa1_b[k]),2*M_PI) <= dxa1 &&  fmod(fabs(DELTA_ANGLE_C - xa1_b[k+1]),2*M_PI) <= dxa1){
+	  //	if (DELTA_ANGLE_C >= xa1_b[k] && DELTA_ANGLE_C <= xa1_b[k+1]){
+          slope = tan(DELTA_ANGLE_C);
+          if ((y[j][i] <= slope*(x[j][i] - x1_b[ie]*cos(PHI_F)) + x1_b[ie]*sin(PHI_F)) &&
+              (y[j][i] >= slope*(x[j][i] - x1_b[ie]*cos(PHI_I)) + x1_b[ie]*sin(PHI_I))){
+            realI_cartesian[index] = 1.0; 	  printf("located!\n");
+	}
+        }
+        else{
+          realI_cartesian[index] = 0.0;
+        }
+#else
 	if(angle_c >=XA1_I_C && angle_c <= XA1_F_C){
 	  slope = tan(angle_c);
 	  if ((y[j][i] <= slope*(x[j][i] - x1_b[ie]*cos(PHI_F)) + x1_b[ie]*sin(PHI_F)) &&
 	      (y[j][i] >= slope*(x[j][i] - x1_b[ie]*cos(PHI_I)) + x1_b[ie]*sin(PHI_I)))
-	  realI_cartesian[index] = 1.0; 
+	    realI_cartesian[index] = 1.0; 
 	}
 	else{
 	  realI_cartesian[index] = 0.0; 
 	}
+#endif
 	index++; 
-
+	
  
 #ifdef TRASH
 	if (fmod(angle_c, M_PI/2) !=0.0){
@@ -579,7 +605,13 @@ int main(int argc, char **argv){
       for(k=ks;k<ke; k++){
 	for (j=js; j<je; j++){
 	  I[k][j][l] = bc_x1i(x[j][is],y[j][is],xa1[k],n*dt);
+#if defined(DELTA_ANGLE_C)	  
+	  I[k][j][nx1-1-l] = (double) bc_x1f_polar_delta(x2[j], xa1_b[k], xa1_b[k+1], dxa1, n*dt);
+	  //	  printf("%lf %lf
+	  //fmod(fabs(DELTA_ANGLE_C - xa1_i),2*M_PI) <= dxa1 &&  fmod(fabs(DELTA_ANGLE_C - xa1_f),2*M_PI) <= dxa1)
+#else
 	  I[k][j][nx1-1-l] = (double) bc_x1f_polar(x2[j], xa1[k], n*dt);
+#endif
 	  //	  I[k][j][nx1-1-l] = bc_x1f(x[j][ie-1],y[j][ie-1],xa1[k],n*dt);
 	}
 	for (i=is; i<ie; i++){
@@ -594,16 +626,8 @@ int main(int argc, char **argv){
 	} 
       }
     }
-    /*  for(k=ks; k<ke; k++){
-    for(j=js; j<je; j++){
-      for(i=is; i<ie; i++){
-	printf("k=%d j=%d i=%d I=%lf\n",k,j,i,I[k][j][i]);
-      }
-    }
-  }
-  return(0); */
 
-    int next, prev; //for indexing third dimension
+    int next, next2, prev, prev2; //for indexing third dimension
     double flux_limiter =0.0; 
     double *imu = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
     /* Donor cell upwinding */
@@ -615,17 +639,6 @@ int main(int argc, char **argv){
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
 	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
-	  //jims formulation
-	  //	  net_flux[k][j][i] = (4*dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i])))/(x1_b[i]*x1_b[i] + x1_b[i+1]*x1_b[i+1]); 
-	  //	  net_flux[k][j][i] = (dt/(kappa[k][j][i]*kappa[k][j][i]*dx1)*(x1_b[i+1]*x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i])));
-
-
-	  /*	  if (i==is+1 && j==js+6 &&k==ks){
-	    printf("i,j,k=%d,%d,%d kappa[i] = %lf U[i]=%lf U[i+1] = %lf \n",i,j,k,kappa[k][j][i],U[k][j][i],U[k][j][i+1]); //cant dereference I here all of the time
-	    printf("I_{i-1} = %lf I_i = %lf I_{i+1} =%lf\n",I[k][j][i-1],I[k][j][i],I[k][j][i+1]);
-	    printf("F_{i+1/2} = %lf\n",dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])));
-	    printf("F_{i-1/2} = %lf\n",dt/(kappa[k][j][i]*dx1)*(-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i-1],0.0)*I[k][j][i])));
-	    } */
 
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
@@ -716,18 +729,58 @@ int main(int argc, char **argv){
 	    prev = k-1;
 	    next = k+1;
 	  }
+	  //need another position for van Leer slopes
+	  if (prev==ks){ //these cases might not cover every situation
+	    prev2 = ke-1;
+	    next2 = next+1;
+	  }
+	  else if (next ==ke-1){
+	    next2 = ks; 
+	    prev2 = prev-1;
+	  }
+	  else{
+	    next2 = next+1;
+	    prev2 = prev-1;
+	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
 	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
-	  //Jims notation
-	  //  net_flux[k][j][i] += 2*dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(- cos(xa1_b[k]) - cos(xa1_b[next]));
-	  //	  net_flux[k][j][i] += 2*dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(-cos(xa1_b[k]) - cos(xa1_b[next]));
-	  //	  net_flux[k][j][i] += dt/dxa1*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i]))/(sin(xa1[k])*kappa[k][j][i]); 
+#ifdef SECOND_ORDER
+	  /* Second order fluxes */
+	  if (W[next][j][i] > 0.0){
+	    imu[0] = I[prev][j][i];  //points to the two preceeding bins; 
+	    imu[1] = I[k][j][i];  
+	    imu[2] = I[next][j][i];  
+	    flux_limiter= flux_PLM(dx2,imu);
+	  }
+	  else{
+	    imu[0] = I[next2][j][i]; //problem with no ghost cells
+	    imu[1] = I[next][j][i];  
+	    imu[2] = I[k][j][i];  
+	    flux_limiter= flux_PLM(dx2,imu);
+	  }
+	  //H^H_{i,j+1/2}
+	  net_flux[k][j][i] -= dt/(dxa1)*((1-dt*fabs(W[next][j][i])/(dxa1))*fabs(W[next][j][i])*flux_limiter/2);
+	  if (W[k][j][i] > 0.0){
+	    imu[0] = I[prev2][j][i];  //points to the two preceeding bins; 
+	    imu[1] = I[prev][j][i];  
+	    imu[2] = I[k][j][i];  
+	    flux_limiter = flux_PLM(dx2,imu);
+	  }
+	  else{
+	    imu[0] = I[next][j][i]; //centered around current bin
+	    imu[1] = I[k][j][i];  
+	    imu[2] = I[prev][j][i];  
+	  flux_limiter= flux_PLM(dx2,imu);
+	  }
+	  //H^H_{i,j-1/2}
+	  net_flux[k][j][i] += dt/(dxa1)*((1-dt*fabs(W[k][j][i])/(dxa1))*fabs(W[k][j][i])*flux_limiter/2);
+#endif
 	}
       }
     }
 
-    /*Apply fluctuations */
+    /*Apply fluxes */
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
 	  for (i=is; i<ie; i++){
@@ -840,13 +893,22 @@ double bc_x1f(double x, double y, double xa1, double t){
 }
 //this bc is specified in terms of polar coordinates
 float bc_x1f_polar(double phi, double xa1, double t){
-  //  if (phi >= PHI_I && phi <= PHI_F && xa1 >= XA1_I && xa1 <= XA1_F )
   //specify in terms of Cartesian angles
   if (phi >= PHI_I && phi <= PHI_F && xA_coordinate_to_physical(xa1, phi) >= XA1_I_C && xA_coordinate_to_physical(xa1, phi) <= XA1_F_C )
     return(1.0);
   return(0.0);
 }
 
+#ifdef DELTA_ANGLE_C
+float bc_x1f_polar_delta(double phi, double xa1_i, double xa1_f, double dxa1, double t){
+  printf("phi = %lf, xa1_i = %lf, xa1_f = %lf xa1_i_c = %lf xa1_f_c = %lf dxa_l =%lf dxa_r = %lf\n",phi,xa1_i,xa1_f,xA_coordinate_to_physical(xa1_i,phi),xA_coordinate_to_physical(xa1_f,phi),fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_i,phi)),2*M_PI), fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_f,phi)),2*M_PI));
+  if (phi >= PHI_I && phi <= PHI_F && fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_i,phi)),2*M_PI) <= dxa1 &&  fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_f,phi)),2*M_PI) <= dxa1){
+    printf("phi = %lf, xa1_i = %lf, xa1_f = %lf\n",phi,xa1_i,xa1_f);
+    return(1.0);
+  }
+  return(0.0);
+}
+#endif
 //bc at phi=0.0
 double bc_x2i(double x, double y, double xa1, double t){
   return(0.0);
