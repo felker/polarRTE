@@ -8,13 +8,19 @@
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 1 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
 #define SECOND_ORDER //flag to turn on van Leer flux limiting
 
-#define ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
+#undef NEW_FLUX //flag to use next incarnation of flux formula
+#undef ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
 //bounds of outer radial boundary conditions for searchlight (inclusive)
 //SPATIAL POSITIONS
+
+#undef TEST1 //original crossing beam test over continuous range of cartesian angles
+#define TEST2 //isotropic point source
+#undef TEST3 //beam at delta(\xi)
+
 #define PHI_I M_PI/6
 #define PHI_F M_PI/3 /*
 #define PHI_I 3*M_PI/4
@@ -63,6 +69,8 @@ double **allocate_2D_contiguous(double *a, int n1, int n2);
 double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3);
 double find_max_double(double a[], int n);
 float bc_x1f_polar(double phi, double xa1, double t);
+double flux_PLM_athena(double r[3], int dir, double dt, double ds, double vel, double imu[3]);
+double bc_interior(double r, double phi, double xa1, double t);
 
 #ifdef DELTA_ANGLE_C
 float bc_x1f_polar_delta(double phi, double xa1_i, double xa1_f, double dxa1, double t);
@@ -75,15 +83,15 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
-  int nsteps=600;
+  int nsteps=400;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 50;
-  int nx2 = 50;
+  int nx1 = 300;
+  int nx2 = 300;
 
   /* Angular parameter */
-  int nxa1 = 50;
+  int nxa1 = 6;
   double  dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
   double phi_z = M_PI/2; 
 
@@ -626,10 +634,23 @@ int main(int argc, char **argv){
 	} 
       }
     }
+    /* set any fixed points inside domain */
+    double fixed_I; 
+    for (k=ks; k<ke; k++){
+      for (j=js; j<je; j++){
+	for (i=is; i<ie; i++){
+	  fixed_I = bc_interior(x1[i], x2[j], xa1[k], n*dt);
+	  if (fixed_I != 0.0)
+	    I[k][j][i] = fixed_I; 
+	}
+      }
+    }
 
     int next, next2, prev, prev2; //for indexing third dimension
     double flux_limiter =0.0; 
+    double flux_limiter_x1_l,flux_limiter_x1_r,flux_limiter_x2_l,flux_limiter_x2_r,flux_limiter_xa1_l,flux_limiter_xa1_r; 
     double *imu = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
+    double *pr = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
     /* Donor cell upwinding */
     for (k=ks; k<ke; k++){
       for (j=js; j<je; j++){
@@ -638,7 +659,7 @@ int main(int argc, char **argv){
 	  U_plus = fmax(U[k][j][i],0.0); // max{U_{i-1/2,j,m},0.0} LHS boundary
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
-	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+	  //net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
@@ -646,40 +667,52 @@ int main(int argc, char **argv){
 	    imu[0] = I[k][j][i-1];
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[k][j][i+1];  
-	    flux_limiter= flux_PLM(dx1,imu);
+	    pr[0] = kappa[k][j][i-1];
+	    pr[1] = kappa[k][j][i];  
+	    pr[2] = kappa[k][j][i+1];  
 	  }
 	  else{
 	    imu[0] = I[k][j][i+2];
 	    imu[1] = I[k][j][i+1];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter= flux_PLM(dx1,imu);
+	    pr[0] = kappa[k][j][i+2];
+	    pr[1] = kappa[k][j][i+1];  
+	    pr[2] = kappa[k][j][i];  
 	  }
+	  flux_limiter_x1_r= flux_PLM(dx1,imu);
+	  flux_limiter_x1_r = flux_PLM_athena(pr, 1, dt, dx1, fabs(U[k][j][i+1]), imu);
+
 	  //F^H_{i+1/2,j}
-	  net_flux[k][j][i] -= dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(1-dt*fabs(U[k][j][i+1])/(dx1))*fabs(U[k][j][i+1])*flux_limiter/2);
-	  //	net_flux[i][j] -= dt/(kappa[i][j]*dx1)*((kappa[i][j]/x1_b[i+1]-dt*fabs(U[i+1][j])/(x1_b[i+1]*dx1))*fabs(U[i+1][j])*flux_limiter/2);
-	  //	net_flux[i][j] += dt/(kappa[i][j]*dx1)*(x1_b[i+1]*(kappa[i][j]/x1_b[i+1]-dt*fabs(U[i+1][j])/(x1_b[i+1]*dx1))*fabs(U[i+1][j])*flux_limiter/2);
+	  //net_flux[k][j][i] -= dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(1-dt*fabs(U[k][j][i+1])/(dx1))*fabs(U[k][j][i+1])*flux_limiter_x1_r/2);
+
 	  if (U[k][j][i] > 0.0){
 	    imu[0] = I[k][j][i-2];  //points to the two preceeding bins; 
 	    imu[1] = I[k][j][i-1];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter= flux_PLM(dx1,imu);
+	    pr[0] = kappa[k][j][i-2];  //points to the two preceeding bins; 
+	    pr[1] = kappa[k][j][i-1];  
+	    pr[2] = kappa[k][j][i];  
 	  }
 	  else{
 	    imu[0] = I[k][j][i+1]; //centered around current bin
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[k][j][i-1];  
-	    flux_limiter= flux_PLM(dx1,imu);
+	    pr[0] = kappa[k][j][i+1]; //centered around current bin
+	    pr[1] = kappa[k][j][i];  
+	    pr[2] = kappa[k][j][i-1];  
 	  }
+	  flux_limiter_x1_l= flux_PLM(dx1,imu);
+	  flux_limiter_x1_l = flux_PLM_athena(pr, 1, dt, dx1, fabs(U[k][j][i]), imu);
 	  //F^H_{i-1/2,j}
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx1)*(x1_b[i]*(1-dt*fabs(U[k][j][i])/(dx1))*fabs(U[k][j][i])*flux_limiter/2);
-	  //	net_flux[i][j] += dt/(kappa[i][j]*dx1)*((kappa[i-1][j]/x1_b[i]-dt*fabs(U[i][j])/(x1_b[i]*dx1))*fabs(U[i][j])*flux_limiter/2);
-	  //net_flux[i][j] -= dt/(kappa[i][j]*dx1)*(x1_b[i]*(kappa[i-1][j]/x1_b[i]-dt*fabs(U[i][j])/(x1_b[i]*dx1))*fabs(U[i][j])*flux_limiter/2);
+	  //net_flux[k][j][i] += dt/(kappa[k][j][i]*dx1)*(x1_b[i]*(1-dt*fabs(U[k][j][i])/(dx1))*fabs(U[k][j][i])*flux_limiter_x1_l/2);
+	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*fabs(U[k][j][i+1]) - x1_b[i]*flux_limiter_x1_l*fabs(U[k][j][i]));
+	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]);
 #endif
 	  /* Second coordinate */
 	  V_plus = fmax(V[k][j][i],0.0); // max{V_{i,j-1/2},0.0} LHS boundary
 	  V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundary
 	  /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
+	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
 
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
@@ -687,32 +720,31 @@ int main(int argc, char **argv){
 	    imu[0] = I[k][j-1][i];  //points to the two preceeding bins; 
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[k][j+1][i];  
-	    flux_limiter= flux_PLM(dx2,imu);
 	  }
 	  else{
 	    imu[0] = I[k][j+2][i];
 	    imu[1] = I[k][j+1][i];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter= flux_PLM(dx2,imu);
 	  }
+	  flux_limiter_x2_r= flux_PLM(dx2,imu);
+	  flux_limiter_x2_r = flux_PLM_athena(pr, 2, dt, kappa[k][j][i]*dx2, fabs(V[k][j+1][i]), imu);//pr isnt dereferenced if dir!=1
 	  //G^H_{i,j+1/2}
-	  net_flux[k][j][i] -= dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j+1][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j+1][i])*flux_limiter/2);
-	  //net_flux[i][j] -= dt/(kappa[i][j]*dx2)*((1-dt*fabs(V[i][j+1])/(dx2))*fabs(V[i][j+1])*flux_limiter/2);
+	  //	  net_flux[k][j][i] -= dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j+1][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j+1][i])*flux_limiter_x2_r/2);
 	  if (V[k][j][i] > 0.0){
 	    imu[0] = I[k][j-2][i];  //points to the two preceeding bins; 
 	    imu[1] = I[k][j-1][i];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter = flux_PLM(dx2,imu);
 	  }
 	  else{
 	    imu[0] = I[k][j+1][i]; //centered around current bin
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[k][j-1][i];  
-	  flux_limiter= flux_PLM(dx2,imu);
 	  }
+	  flux_limiter_x2_l = flux_PLM(dx2,imu);
+	  flux_limiter_x2_l = flux_PLM_athena(pr, 2, dt, kappa[k][j][i]*dx2, fabs(V[k][j][i]), imu);
 	  //G^H_{i,j-1/2}
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j][i])*flux_limiter/2);
-	  //net_flux[i][j] += dt/(kappa[i][j]*dx2)*((1-dt*fabs(V[i][j])/(dx2))*fabs(V[i][j])*flux_limiter/2);
+	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j][i])*flux_limiter_x2_l/2);
+	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]);
 #endif
 	  /* Third coordinate */
 	  /* Have to manually compute indices due to lack of ghost cells */
@@ -744,42 +776,55 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
-	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  //	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (W[next][j][i] > 0.0){
 	    imu[0] = I[prev][j][i];  //points to the two preceeding bins; 
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[next][j][i];  
-	    flux_limiter= flux_PLM(dx2,imu);
 	  }
 	  else{
 	    imu[0] = I[next2][j][i]; //problem with no ghost cells
 	    imu[1] = I[next][j][i];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter= flux_PLM(dx2,imu);
 	  }
+	  flux_limiter_xa1_r= flux_PLM(dxa1,imu);
+	  flux_limiter_xa1_r = flux_PLM_athena(pr, 3, dt, dxa1, fabs(W[next][j][i]), imu);//pr isnt dereferenced if dir!=1
 	  //H^H_{i,j+1/2}
-	  net_flux[k][j][i] -= dt/(dxa1)*((1-dt*fabs(W[next][j][i])/(dxa1))*fabs(W[next][j][i])*flux_limiter/2);
+	  //	  net_flux[k][j][i] += dt/(dxa1)*((1-dt*fabs(W[next][j][i])/(dxa1))*fabs(W[next][j][i])*flux_limiter_xa1_r/2);
+
 	  if (W[k][j][i] > 0.0){
 	    imu[0] = I[prev2][j][i];  //points to the two preceeding bins; 
 	    imu[1] = I[prev][j][i];  
 	    imu[2] = I[k][j][i];  
-	    flux_limiter = flux_PLM(dx2,imu);
 	  }
 	  else{
 	    imu[0] = I[next][j][i]; //centered around current bin
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[prev][j][i];  
-	  flux_limiter= flux_PLM(dx2,imu);
 	  }
+	  flux_limiter_xa1_l = flux_PLM(dxa1,imu);
+	  flux_limiter_xa1_l = flux_PLM_athena(pr, 3, dt, dxa1, fabs(W[k][j][i]), imu);//pr isnt dereferenced if dir!=1
 	  //H^H_{i,j-1/2}
-	  net_flux[k][j][i] += dt/(dxa1)*((1-dt*fabs(W[k][j][i])/(dxa1))*fabs(W[k][j][i])*flux_limiter/2);
+	  //net_flux[k][j][i] -= dt/(dxa1)*((1-dt*fabs(W[k][j][i])/(dxa1))*fabs(W[k][j][i])*flux_limiter_xa1_l/2);
+
+	  net_flux[k][j][i] += dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]);
+#endif
+
+#ifdef NEW_FLUX  //regroup fluxes in dimension. assume appropriate limited van leer slope has been calculated
+	  //why should signs be flipped on correction fluxes??
+	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1*dx2*dxa1)*(x1_b[i+1]*dx2*dxa1*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1] - (1-dt*fabs(U[k][j][i+1])/(dx1))*fabs(U[k][j][i+1])*flux_limiter_x1_r/2)- //A_{i+1/2}F_{i+1/2}
+								x1_b[i]*dx2*dxa1*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i] - (1-dt*fabs(U[k][j][i])/(dx1))*fabs(U[k][j][i])*flux_limiter_x1_l/2) //A_{i-1/2}F_{i-1/2}
+								+dx1*dxa1*(fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i] - ((1-dt*fabs(V[k][j+1][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j+1][i])*flux_limiter_x2_r/2)) //A_{j+1/2}G_{j+1/2}
+								-dx1*dxa1*(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i] - (1-dt*fabs(V[k][j][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j][i])*flux_limiter_x2_l/2)//A_{j-1/2}G_{j-1/2}
+								+kappa[k][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i] - ((1-dt*fabs(W[next][j][i])/(dxa1))*fabs(W[next][j][i])*flux_limiter_xa1_r/2)) //A_{l+1/2}H_{l+1/2}
+								-kappa[k][j][i]*dx1*dx2*(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i] - ((1-dt*fabs(W[k][j][i])/(dxa1))*fabs(W[k][j][i])*flux_limiter_xa1_l/2))); //A_{l-1/2}H_{l-1/2}
 #endif
 	}
       }
     }
-
+    
     /*Apply fluxes */
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
@@ -894,11 +939,22 @@ double bc_x1f(double x, double y, double xa1, double t){
 //this bc is specified in terms of polar coordinates
 float bc_x1f_polar(double phi, double xa1, double t){
   //specify in terms of Cartesian angles
+#ifdef TEST1
   if (phi >= PHI_I && phi <= PHI_F && xA_coordinate_to_physical(xa1, phi) >= XA1_I_C && xA_coordinate_to_physical(xa1, phi) <= XA1_F_C )
     return(1.0);
+#endif
   return(0.0);
 }
+//if you want to fix a point inside the domain at a particular intensity 
+double bc_interior(double r, double phi, double xa1, double t){
 
+#ifdef TEST2
+  if (r >=1.75 && r <=2.0 && phi >= 5*M_PI/4 && phi <=11*M_PI/8)
+    return(1.0);
+#endif 
+
+  return(0.0);
+}
 #ifdef DELTA_ANGLE_C
 float bc_x1f_polar_delta(double phi, double xa1_i, double xa1_f, double dxa1, double t){
   printf("phi = %lf, xa1_i = %lf, xa1_f = %lf xa1_i_c = %lf xa1_f_c = %lf dxa_l =%lf dxa_r = %lf\n",phi,xa1_i,xa1_f,xA_coordinate_to_physical(xa1_i,phi),xA_coordinate_to_physical(xa1_f,phi),fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_i,phi)),2*M_PI), fmod(fabs(DELTA_ANGLE_C - xA_coordinate_to_physical(xa1_f,phi)),2*M_PI));
@@ -1123,3 +1179,52 @@ double df(double phi, double x, double y, double r_max){
 double xA_coordinate_to_physical(double xa1, double x2){
   return fmod(xa1 + x2,2*M_PI);
 } 
+
+double flux_PLM_athena(double r[3], int dir, double dt, double ds, double vel, double imu[3])
+{
+  /* for each ray, we always use the upwind specific intensity , therefore velocity is always positive */
+  /* imup[0:2] is i-2, i-1, i*/
+
+  double dqi0, delq1, delq2;
+  double *imup;
+  double distance;
+  double *pr;
+  pr = &(r[2]);
+  double geom1 = 1.0, geom2 = 1.0;
+  double geom3 = 1.0, geom4 = 1.0; /* geometric weighting factor */
+
+  imup = &(imu[2]);
+
+  /* The upwind slope */
+  delq1 = (imup[0] - imup[-1]) / ds;
+  delq2 = (imup[-1] - imup[-2]) / ds;
+  /* Only need to apply the weighting factor when we want to calculate
+   * flux along radial direction */
+  if (dir ==1 ){
+    geom1 = 1.0/(1.0 - ds * ds/(12.0 * pr[0] * pr[-1]));
+    geom2 = 1.0/(1.0 - ds * ds/(12.0 * pr[-1] * pr[-2]));
+    
+    delq1 *= geom1;
+    delq2 *= geom2;
+  }
+
+  if(delq1 * delq2 > 0.0){
+    dqi0 = 2.0 * delq1 * delq2 / (delq1 + delq2);
+  }
+  else{
+    dqi0 = 0.0;
+  }
+
+  /* Take into account the curvature effect for time averaged interface state */
+  /* See eq. 64 of skinner & ostriker 2010 */
+  if (dir == 1){
+    geom3 = 1.0 - ds /(6.0 * pr[-1]);
+    geom4 = 1.0 - vel * dt/(6.0*(0.5 * (pr[-1] + pr[0]) - 0.5 * vel * dt));
+  }
+
+  distance = ds * geom3;
+  distance -= ((vel * dt) * geom4);
+
+  /* The upwind flux */
+  return(imup[-1] + distance * (dqi0/2.0)); 
+}
