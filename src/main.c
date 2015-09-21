@@ -7,10 +7,10 @@
 //select solver options
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
-#define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define CFL 0.4 //if set to 1.0, 1D constant advection along grid is exact. 
+#define OUTPUT_INTERVAL 10 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
-#define SECOND_ORDER //flag to turn on van Leer flux limiting
+#undef SECOND_ORDER //flag to turn on van Leer flux limiting
 
 #undef NEW_FLUX //flag to use next incarnation of flux formula
 #undef ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
@@ -18,8 +18,9 @@
 //SPATIAL POSITIONS
 
 #undef TEST1 //original crossing beam test over continuous range of cartesian angles
-#define TEST2 //isotropic point source
-#undef TEST3 //beam at delta(\xi)
+#undef TEST2 //isotropic, thick point source
+#define TEST3 //isotropic, single point source
+#undef TEST4 //beam at delta(\xi), avoiding hole
 
 #define PHI_I M_PI/6
 #define PHI_F M_PI/3 /*
@@ -87,8 +88,8 @@ int main(int argc, char **argv){
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 300;
-  int nx2 = 300;
+  int nx1 = 50;
+  int nx2 = 12; 
 
   /* Angular parameter */
   int nxa1 = 6;
@@ -167,11 +168,11 @@ int main(int argc, char **argv){
   x2_b[js] = x2_i - dx2/2;
   for(i=is+1; i<=ie; i++){ 
     x1_b[i] = x1_b[i-1] + dx1;
-    //    printf("%lf\n",x1_b[i]);
+    // printf("x1_b[%d] = %lf\n",i,x1_b[i]);
   }
   for(i=js+1; i<=je; i++){
     x2_b[i] = x2_b[i-1] + dx2;
-    //printf("%lf\n",x2_b[i]);
+    //    printf("x2_b[%d] = %lf\n",i,x2_b[i]);
   } 
 
   /*Cell centered (zonal) values of physical coordinate position */
@@ -207,11 +208,11 @@ int main(int argc, char **argv){
   
   /*Coordinate cell capacity */
   double *datakappa= (double *) malloc(sizeof(double)*nx1*nx2*nxa1);
-  double ***kappa = allocate_3D_contiguous(datakappa,nxa1,nx2,nx1); 
+  double ***kappa = allocate_3D_contiguous(datakappa,nxa1+1,nx2,nx1); 
 
   //cell centered velocities require the ability to access is-1,js-1
   //  x1[is-1] = x1[is] - dx1; //only works if dx1 < 0.5
-  for(k=ks; k<ke; k++){
+  for(k=ks; k<=ke; k++){
     for(j=js-1; j<=je; j++){
       for(i=is-1; i<=ie; i++){
 	if (i==ie)
@@ -235,6 +236,11 @@ int main(int argc, char **argv){
 
   nxa1 = uniform_angles2D(nxa1, phi_z, pw, mu, mu_b, xa1,xa1_b); 
 
+  /*  for(k=ks; k<ke; k++)
+    printf("xa1[%d] = %lf \n",k,xa1[k]);
+  for(k=ks; k<=ke; k++)
+  printf("xa1_b[%d] = %lf \n",k,xa1_b[k]);  */
+
   /*Average normal edge velocities */
   //now we move from cell centered quantities to edge quantities 
   //the convention in this code is that index i refers to i-1/2 edge
@@ -254,33 +260,32 @@ int main(int argc, char **argv){
   for(k=ks; k<ke; k++){    
     for(j=js-1; j<=je; j++){       
       for(i=is-1; i<=ie; i++){//ERROR boundary values not initialized
-	//circular motion test
-	/*	U[k][j][i] =0.0;
-	V[k][j][i] =1.0 *x1[i];
-	W[k][j][i] =0.0; */
-	U[k][j][i] = mu[k][0];
+	/*	U[k][j][i] = mu[k][0];
 	V[k][j][i] = mu[k][1];
-	//V[k][j][i] = mu[k][1]/kappa[k][j][i];
-	W[k][j][i] = -mu[k][1]/kappa[k][j][i];
-	//	W[k][j][i] = -(pow(mu[k][1],3)+ 2*mu[k][1]*pow(mu[k][0],2))/kappa[k][j][i];
+	W[k][j][i] = -mu[k][1]/kappa[k][j][i]; */
+	//Compute exact average edge velocities 
+	U[k][j][i] = (sin(xa1_b[k+1]) - sin(xa1_b[k]))/dxa1; 
+	V[k][j][i] = (-cos(xa1_b[k+1]) + cos(xa1_b[k]))/dxa1; 
+	W[k][j][i] = -sin(xa1_b[k])/kappa[k][j][i];  
 	source[k][j][i] = 0.0;
       }
     }
   }  
 
   k=ke; //final boundary is periodic 
-    for(j=js; j<=je; j++){       
-      for(i=is; i<=ie; i++){//ERROR boundary values not initialized
-	U[k][j][i] = mu[0][0];
-	V[k][j][i] = mu[0][1];
-	//V[k][j][i] = mu[0][1]/kappa[ks][j][i];
-	W[k][j][i] = -mu[0][1]/kappa[ks][j][i];
-	//	W[k][j][i] = -(pow(mu[0][1],3)+ 2*mu[0][1]*pow(mu[0][0],2))/kappa[0][j][i];
-	source[k][j][i] = 0.0;    
-
-      }
+  for(j=js; j<=je; j++){       
+    for(i=is; i<=ie; i++){//ERROR boundary values not initialized
+      /*      U[k][j][i] = mu[0][0];
+      V[k][j][i] = mu[0][1]; 
+      W[k][j][i] = -mu[0][1]/kappa[ks][j][i];  */
+      //compute exact average edge velocities
+      U[k][j][i] = (sin(xa1_b[ks]) - sin(xa1_b[k]))/dxa1; 
+      V[k][j][i] = (-cos(xa1_b[ks]) + cos(xa1_b[k]))/dxa1; 
+      W[k][j][i] = -sin(xa1_b[k])/kappa[k][j][i]; 
+      source[k][j][i] = 0.0;    
     }
-
+  }
+  
   //ERROR: need to pass absolute values to max finder
   //  printf("max|U| = %lf max|V| = %lf max|W| = %lf\n",find_max_double(dataU,nxa1*nx1*nx2),find_max_double(dataV,nxa1*nx1*nx2),find_max_double(dataW,nxa1*nx1*nx2));
 
@@ -541,12 +546,12 @@ int main(int argc, char **argv){
       indexJ++;
     }
   }
-  index =0; 
+  index = 0; 
   for (k=ks; k<ke; k++){
     indexJ=0; 
     for (j=js; j<je; j++){
       for (i=is; i<ie; i++){
-	realJ[indexJ] += (float) realI[index]/nxa1;
+	realJ[indexJ] += (float) realI[index]*pw[k];
 	indexJ++;
 	index++;
       }
@@ -584,7 +589,7 @@ int main(int argc, char **argv){
     for (j=js; j<je; j++){
       for (i=is; i<ie; i++){
 	realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
-	realJ[indexJ] += (float) I[k][j][i]/nxa1;
+	realJ[indexJ] += (float) I[k][j][i]*pw[k];
 	index++;
 	indexJ++;
       }
@@ -639,6 +644,14 @@ int main(int argc, char **argv){
     for (k=ks; k<ke; k++){
       for (j=js; j<je; j++){
 	for (i=is; i<ie; i++){
+#ifdef TEST3
+	  if (i == is + 1*nx1_r/3 && j == js + 1*nx2_r/4){ //integer division
+	    I[k][j][i] = 1.0;
+	    // printf("U,V,W = %lf,%lf,%lf\n",U[k][j][i],V[k][j][i],W[k][j][i]);
+	    //printf("inexact U,V,W = %lf,%lf,%lf\n",mu[k][0],mu[k][1],-mu[k][1]/kappa[k][j][i]);
+	  }
+	
+#endif 
 	  fixed_I = bc_interior(x1[i], x2[j], xa1[k], n*dt);
 	  if (fixed_I != 0.0)
 	    I[k][j][i] = fixed_I; 
@@ -659,7 +672,7 @@ int main(int argc, char **argv){
 	  U_plus = fmax(U[k][j][i],0.0); // max{U_{i-1/2,j,m},0.0} LHS boundary
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
-	  //net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
@@ -712,7 +725,7 @@ int main(int argc, char **argv){
 	  V_plus = fmax(V[k][j][i],0.0); // max{V_{i,j-1/2},0.0} LHS boundary
 	  V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundary
 	  /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
-	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
 
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
@@ -776,7 +789,7 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
-	  //	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (W[next][j][i] > 0.0){
@@ -812,6 +825,11 @@ int main(int argc, char **argv){
 	  net_flux[k][j][i] += dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]);
 #endif
 
+	  //DEBUGGING POINT SOURCE
+	  /*	  if (i == is + 2*nx1_r/3 && j == js + 2*nx2_r/3){ 
+	    printf("r flux = %lf phi flux = %lf xi flux = %lf\n",dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]),dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]), dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]));
+	    return(0); 
+	  } */
 #ifdef NEW_FLUX  //regroup fluxes in dimension. assume appropriate limited van leer slope has been calculated
 	  //why should signs be flipped on correction fluxes??
 	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1*dx2*dxa1)*(x1_b[i+1]*dx2*dxa1*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1] - (1-dt*fabs(U[k][j][i+1])/(dx1))*fabs(U[k][j][i+1])*flux_limiter_x1_r/2)- //A_{i+1/2}F_{i+1/2}
@@ -862,7 +880,7 @@ int main(int argc, char **argv){
 	  //index =(j-num_ghost)*nx2_r + (i-num_ghost); 
 	  realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
 	  /*compute zeroth angular moment of the radiation field*/
-	  realJ[indexJ] += (float) I[k][j][i]/nxa1;
+	  realJ[indexJ] += (float) I[k][j][i]*pw[k];
 	  indexJ++; 
 	  index++;
 	}
@@ -878,20 +896,7 @@ int main(int argc, char **argv){
 	}
       }
     }
-    
-    //debug only horizontal flow
-    /*    if (find_max(realI,nx1_r*nx2_r) > 1.1){
-      printf("I greater than 1.0!\n"); 
-      for (i=1;i<nx1; i++){
-	for (j=1; j<nx2; j++){
-	  if (I[i][j] > 1.0){
-	    printf("i=%d j=%d I[i][j] = %0.10lf\n",i,j,I[i][j]); 
-	    return(0); 
-	  }
-	}
-      }
-      }*/
-
+   
     sprintf(filename,"rte-%.3d.vtk",n); 
     if(!OUTPUT_INTERVAL){
       if (n==nsteps-1) //for only the final result
