@@ -65,13 +65,17 @@ float find_max(float a[], int n);
 float find_min(float a[], int n); 
 float sum(float a[], int n);
 double gaussian(double x_0, double y_0,double x,double y);
-double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b);
+int uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b);
 double **allocate_2D_contiguous(double *a, int n1, int n2);
 double ***allocate_3D_contiguous(double *a, int n1, int n2, int n3);
 double find_max_double(double a[], int n);
 float bc_x1f_polar(double phi, double xa1, double t);
 double flux_PLM_athena(double r[3], int dir, double dt, double ds, double vel, double imu[3]);
 double bc_interior(double r, double phi, double xa1, double t);
+void gaussianelim(double **A, double *b, double *x, int n, int pivot);
+int permutation(int i, int j, int k, double ** pl, int np);
+int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b);
+int cmpfunc (const void * a, const void * b);
 
 #ifdef DELTA_ANGLE_C
 float bc_x1f_polar_delta(double phi, double xa1_i, double xa1_f, double dxa1, double t);
@@ -92,8 +96,19 @@ int main(int argc, char **argv){
   int nx2 = 12; 
 
   /* Angular parameter */
-  int nxa1 = 6;
-  double  dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
+  int xa1_uniform = 0; 
+  int nxa1;
+  double dxa1; 
+  int N_bruls; //analogous to N in MATLAB code. must be even <=12
+  if (xa1_uniform){
+    nxa1 =6;
+    dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
+  } 
+  else {
+    N_bruls = 4;
+    nxa1 = N_bruls*(N_bruls+2)/2;
+  }
+
   double phi_z = M_PI/2; 
 
   //number of ghost cells on both sides of each dimension
@@ -231,15 +246,24 @@ int main(int argc, char **argv){
   double *datamu_b = (double *) malloc(sizeof(double )*3*(nxa1+1));//identify with left and bottom boundaries 
   double *pw = (double *) malloc(sizeof(double)*nxa1); 
   double **mu = allocate_2D_contiguous(datamu,nxa1,3); //CONVENTION: xa1 is the first dimension, component is second dim 
-  //  double **mu_b = allocate_2D_contiguous(datamu_b,nxa1,3); 
   double **mu_b = allocate_2D_contiguous(datamu_b,nxa1+1,3); 
 
-  nxa1 = uniform_angles2D(nxa1, phi_z, pw, mu, mu_b, xa1,xa1_b); 
+  if (xa1_uniform){
+    nxa1 = uniform_angles2D(nxa1, phi_z, pw, mu, mu_b, xa1,xa1_b); 
+  }
+  else{
+    bruls_angles2D(N_bruls, phi_z, pw, mu, mu_b, xa1,xa1_b); 
+  }
 
-  /*  for(k=ks; k<ke; k++)
+  for(k=ks; k<ke; k++)
     printf("xa1[%d] = %lf \n",k,xa1[k]);
   for(k=ks; k<=ke; k++)
-  printf("xa1_b[%d] = %lf \n",k,xa1_b[k]);  */
+    printf("xa1_b[%d] = %lf \n",k,xa1_b[k]);   
+  for(k=ks; k<ke; k++)
+    printf("mu[%d] = (%lf,%lf) \n",k,mu[k][0],mu[k][1]);
+  for(k=ks; k<=ke; k++)
+    printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   
+  return(0);
 
   /*Average normal edge velocities */
   //now we move from cell centered quantities to edge quantities 
@@ -1072,7 +1096,7 @@ double flux_PLM(double ds,double *imu){
   return(ds*dqi0); 
 }
 
-double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b){
+int uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b){
 /* Generate uniform 2D discretization of mu */
 
   //   Input: N-- Number of mu level cells in one \hat{k}^i dimension
@@ -1095,7 +1119,6 @@ double uniform_angles2D(int N, double phi_z, double *pw, double **mu, double **m
   for (i=1; i<nxa1; i++){
     xa1_b[i] = xa1_b[i-1] + dxa1; 
     xa1[i] = xa1[i-1] + dxa1; 
-
   }
 
   //add another boundary ray for purposes of VTK output
@@ -1232,4 +1255,224 @@ double flux_PLM_athena(double r[3], int dir, double dt, double ds, double vel, d
 
   /* The upwind flux */
   return(imup[-1] + distance * (dqi0/2.0)); 
+}
+int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b){
+  int num_rays = N*(N+2)/2; //up to 84 in 2D
+  int num_rays_per_quadrant = num_rays/4; 
+
+
+  //made modifications relative to MATLAB code to force phi_z=pi
+  double *ordinates = malloc(sizeof(double)*N/2); 
+  ordinates[0] = sqrt(1.0/(3.0*(N-1))); //changed
+  double dcos = (1-3*pow(ordinates[0],2))*2/(N-2); //changed 
+
+  int i, j,k; 
+  /* Choice of first cosine is arbitrary. In analogy to Gaussian quadrature */
+  for (i=0; i<N/2; i++){
+    ordinates[i] = sqrt(ordinates[0]*ordinates[0] + i*dcos); 
+  }
+
+  // Derive weights for integration. Ref: Bruls 1999 appendix
+  double *W = malloc(sizeof(double)*N/2); 
+  for (i=0; i<N/2; i++)
+    W[i] = sqrt(4/(3*(N-1)) + i*2/(N-1));  //should I change?
+  //compute level weights
+  double *lw = malloc(sizeof(double)*N/2); 
+  lw[0] = W[0];
+  double sum =lw[0]; 
+  for (i=1; i<N/2-1; i++){
+    lw[i] = W[i] - W[i-1];
+    sum += lw[i]; 
+  }
+
+  /* following ATHENA, we correct the last level weight to renormalize...not
+     sure why this happens */
+  lw[N/2-1] = 1.0 - sum; 
+  
+  /* Permutation matrix */
+  double **pl, **pmat; 
+  double *data_pl = malloc(sizeof(double)*N/2*3); 
+  double *data_pmat = malloc(sizeof(double)*N/2*N/2); 
+
+  pl = allocate_2D_contiguous(data_pl,N/2,3); 
+  pmat = allocate_2D_contiguous(data_pmat,N/2,N/2); 
+  int *plab; 
+  plab = malloc(sizeof(int *)*num_rays); 
+
+  int ray_count = 0; 
+  int np =0; 
+  int ip =0; 
+  /* To select valid rays for the quadrature, we follow the index selection
+  rule: sigma = i + j + k
+  i.e. indices of the direction cosines must equal ntheata/2 +2
+  for proper normalization in 3D space */
+  for (i=0; i<N/2; i++){
+    for (j=0; j<N/2-i; j++){
+      k = N/2-i-j; 
+      mu[ray_count][0] = ordinates[i]; 
+      mu[ray_count][1] = ordinates[j]; 
+      ip = permutation(i,j,k,pl,np); 
+      if (ip == -1){ //ray indices havent been loaded yet
+	pl[np][0] = i; 
+	pl[np][1] = j; 
+	pl[np][2] = k; 
+	pmat[i][np]++; 
+	plab[ray_count] = np; 
+	np = np+1; 
+      }
+      else {
+	pmat[i][ip]++;
+      }
+      ray_count++;  
+    }
+  }
+  assert(ray_count == num_rays_per_quadrant); 
+
+  /* discretization symmetry: reflect across second axis */
+  for (i=0; i<ray_count; i++){
+    mu[ray_count+i][0] = -mu[i][0]; 
+    mu[ray_count+i][1] = mu[i][1]; 
+  }
+  ray_count*=2;  
+  /* discretization symmetry: reflect across second axis */
+  //flip the order for this so that the rays are in order of xa1
+  for (i=0; i<ray_count; i++){
+    mu[2*ray_count-(i+1)][0] = mu[i][0]; 
+    mu[2*ray_count-(i+1)][1] = -mu[i][1]; 
+  }
+  ray_count*=2; 
+
+  /* Solve system of equations to calculate families of point weights */
+  double *wpf = malloc(sizeof(double)*N/2-1); 
+  gaussianelim(pmat, lw, wpf, N/2-1, 1);
+  for(i=0; i<num_rays_per_quadrant; i++){
+    pw[i] = wpf[plab[i]]/4; 
+    pw[i+num_rays_per_quadrant] = wpf[plab[i]]/4; 
+    pw[i+2*num_rays_per_quadrant] = wpf[plab[i]]/4; 
+    pw[i+3*num_rays_per_quadrant] = wpf[plab[i]]/4; 
+  }
+  
+  /* Compute angles corresponding to sample rays */
+  for (i=0; i<num_rays; i++){
+    xa1[i] = atan2(mu[i][1],mu[i][0]) + M_PI;
+  }
+  /* Sort by increasing xa1 */
+  qsort(xa1, num_rays, sizeof(double), cmpfunc); 
+  //better way of resorting mu?
+  //recompute mu
+  for (i=0; i < num_rays; i++){
+    mu[i][0] = cos(xa1[i])*sin(phi_z); 
+    mu[i][1] = sin(xa1[i])*sin(phi_z);
+    mu[i][2] = cos(phi_z); 
+  }
+
+  /* Boundary angles lie halfway between adjacent sample rays */
+  //i am assuming they are ordered in xi here, and:
+  // the first ray is in the first quadrant
+  // the last ray is in the last quadrant 
+  xa1_b[0] = fmod((xa1[0] +2*M_PI + xa1[num_rays-1])/2, 2*M_PI); 
+  for (i=1; i<num_rays; i++){
+    xa1_b[i] = (xa1[i] + xa1[i-1])/2; 
+  }
+  xa1_b[num_rays] = xa1_b[0];  
+  for (i=0; i <= num_rays; i++){
+    mu_b[i][0] = cos(xa1_b[i])*sin(phi_z); 
+    mu_b[i][1] = sin(xa1_b[i])*sin(phi_z);
+    mu_b[i][2] = cos(phi_z); 
+  }
+  return(num_rays); 
+}
+//stolen from ATHENA to calculate point weights
+int permutation(int i, int j, int k, double ** pl, int np){
+  int ip = -1;
+  int l,m,n,o; 
+  for (l=0; l<np; l++){
+    for(m=0; m<3; m++){
+      if (i == pl[l][m])
+	for (n=0; n<3; n++){
+	  if (n != m){
+	    if (j == pl[l][n]){
+	      for (o=0; o<3; o++){
+		if(o!= m && o!= n){
+		  if (k == pl[l][o]){
+		    ip = l; 
+		  }
+		}
+	      }
+	    }
+	  }
+	}
+    }
+  }           
+  return(ip); 
+}
+
+void gaussianelim(double **A, double *b, double *x, int n, int pivot) { //pivot 1 for partial row, 0 for no pivoting
+  int i, j, pivot_pos, column;
+  double **Ab; 
+  double ratio,tmp;
+
+  /* Allocate the new augmented matrix */
+  Ab = (double **) malloc(sizeof(double)*(n));//allocate n pointers to rows of pointers
+  for (i=0; i<n; i++){
+    Ab[i] = (double *) malloc(sizeof(double)*(n+1));
+  }
+
+  /*Copy the old matrix and rhs into augmented matrix */
+  for (i=0; i <n; ++i){     //rows
+    for (j=0; j <n; ++j){ //collumns
+      Ab[i][j] = A[i][j];
+    }
+  }
+  for (i=0; i<n; i++) Ab[i][n] = b[i];
+
+  /*Gaussian Elimination */
+  /*Pivoting */
+  double *temp;
+  temp = (double *) calloc(sizeof(double),n+1);
+  if (pivot) {
+    for (j=0; j<n; j++){
+      for (i=j+1; i<n; i++){ //check all rows beneath current pivot pos
+	if (fabs(Ab[i][j]) > fabs(Ab[j][j])) {
+	  temp = Ab[i];
+	  Ab[i] = Ab[j];
+	  Ab[j] = temp;
+	}
+      }
+    }
+  }
+  
+  /* Elimination of variables via basic row operations */
+  for (i =0; i < (n-1); i++) {           //starting with first row, first column
+    for (j=i+1; j<n; ++j) {              // take next row, first column
+      ratio = Ab[j][i] / Ab[i][i];       //compute their ratio
+      for (column = i; column <n+1; column++){    // and eliminate it from the second row
+	Ab[j][column] -= (ratio * Ab[i][column]); // by subtracting it from all coef
+      } //do this for all rows until the last row
+    }
+  }
+  
+  /* Back Subsitution */
+  for (i=n-1; i>=0; i--){ //rows, starting from bottom
+    tmp = 0; //Build a temporary dbl precision that holds the solved variables* the rows coefficients to subtract from RHS for each line
+    for (j= i+1; j<n; j++) { //this inner loop doesnt do anything for the bottom row, since the equation req no more info
+      tmp += x[j]*Ab[i][j];
+    }
+    x[i] = (Ab[i][n] - tmp)/ Ab[i][i]; //RHS - tmp (known variables, scaled) / unknown coeff
+  }
+}
+
+int cmpfunc (const void * a, const void * b)
+{
+  double a_r = *(double*)a;
+  double b_r = *(double*)b;
+  if (a_r > b_r ){
+    return(1);
+  }
+  else if (b_r > a_r){
+    return(-1);
+  }
+  else {
+    return(0);
+  }
 }
