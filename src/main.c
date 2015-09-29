@@ -10,7 +10,7 @@
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
 #define OUTPUT_INTERVAL 10 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
-#undef SECOND_ORDER //flag to turn on van Leer flux limiting
+#define SECOND_ORDER //flag to turn on van Leer flux limiting
 
 #undef NEW_FLUX //flag to use next incarnation of flux formula
 #undef ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
@@ -18,8 +18,8 @@
 //SPATIAL POSITIONS
 
 #undef TEST1 //original crossing beam test over continuous range of cartesian angles
-#undef TEST2 //isotropic, thick point source
-#define TEST3 //isotropic, single point source
+#define TEST2 //isotropic, thick point source
+#undef TEST3 //isotropic, single point source
 #undef TEST4 //beam at delta(\xi), avoiding hole
 
 #define PHI_I M_PI/6
@@ -93,16 +93,16 @@ int main(int argc, char **argv){
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 50;
-  int nx2 = 50; 
+  int nx1 = 100;
+  int nx2 = 100; 
 
   /* Angular parameter */
-  int xa1_uniform = 0; 
+  int xa1_uniform = 1; 
   int nxa1;
   double *dxa1;  //angular width of cell 
   int N_bruls; //analogous to N in MATLAB code. must be even <=12
   if (xa1_uniform){
-    nxa1 = 6;
+    nxa1 = 12;
   } 
   else {
     N_bruls = 4;
@@ -283,17 +283,19 @@ int main(int argc, char **argv){
 
   //uniform 
   //2*M_PI/(nxa1); //dont mesh all the way to 2pi
-
-  /*  for(k=ks; k<ke; k++)
+  /*
+  for(k=ks; k<ke; k++)
     printf("xa1[%d] = %lf \n",k,xa1[k]);
   for(k=ks; k<=ke; k++)
     printf("xa1_b[%d] = %lf \n",k,xa1_b[k]);   
-  for(k=ks; k<=ke; k++)
+  for(k=ks; k<ke; k++)
     printf("dxa1[%d] = %lf \n",k,dxa1[k]);   
   for(k=ks; k<ke; k++)
     printf("mu[%d] = (%lf,%lf) \n",k,mu[k][0],mu[k][1]);
   for(k=ks; k<=ke; k++)
-    printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   */
+    printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   
+  */
+  //Check Bruls Quadrature conditions-- only makes sense in 3D propagation
 
   /*Average normal edge velocities */
   //now we move from cell centered quantities to edge quantities 
@@ -309,7 +311,7 @@ int main(int argc, char **argv){
   double ***source = allocate_3D_contiguous(dataW,nxa1+1,nx2,nx1);//not using contiguous array right now. debug
 
   //Need to be able to reference ghost cells, for which x1[] is undefined 
-  for(k=ks; k<=ke; k++){    
+  for(k=ks; k<=ke; k++){    //this incorrectly handles dxa1[ke] which is undefined
     for(j=js-1; j<=je; j++){       
       for(i=is-1; i<=ie; i++){
 	if (k==ke)
@@ -722,8 +724,9 @@ int main(int argc, char **argv){
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
 	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 	  //rewrite for bruls discretization
+#if !defined(SECOND_ORDER)
 	  net_flux[k][j][i] = dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*dxa1[k]*dx2*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
-#ifdef SECOND_ORDER
+#else
 	  /* Second order fluxes */
 	  if (U[k][j][i+1] > 0.0){ //middle element is always the upwind element
 	    imu[0] = I[k][j][i-1];
@@ -782,8 +785,9 @@ int main(int argc, char **argv){
 	  /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
 	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
 	  //rewrite for bruls discretization
+#if !defined(SECOND_ORDER)
 	  net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*(fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-dx1*dxa1[k]*(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
-#ifdef SECOND_ORDER
+#else
 	  /* Second order fluxes */
 	  if (V[k][j+1][i] > 0.0){
 	    imu[0] = I[k][j-1][i];  //points to the two preceeding bins; 
@@ -820,6 +824,7 @@ int main(int argc, char **argv){
 	  //rewrite for bruls discretization
 	  net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i] - dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]);
 #endif
+
 	  /* Third coordinate */
 	  /* Have to manually compute indices due to lack of ghost cells */
 	  /* Fluxes: H_i,j,n+1/2 - H_i,j,n-1/2 */
@@ -850,10 +855,12 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
+
+#if !defined(SECOND_ORDER)
 	  //	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
 	  //rewrite for bruls discretization
 	  net_flux[k][j][i] += (dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-kappa[k][j][i]*dx1*dx2*(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
-#ifdef SECOND_ORDER
+#else
 	  /* Second order fluxes */
 	  if (W[next][j][i] > 0.0){
 	    imu[0] = I[prev][j][i];  //points to the two preceeding bins; 
@@ -889,13 +896,10 @@ int main(int argc, char **argv){
 	  //	  net_flux[k][j][i] += dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]);
 	  //rewrite for bruls discretization
 	  net_flux[k][j][i] += dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*flux_limiter_xa1_r*W[next][j][i] - kappa[k][j][i]*dx1*dx2*flux_limiter_xa1_l*W[k][j][i]);
+	  /*	  printf("k = %d prev = %d next = %d\n",k,prev,next);
+		  printf("xa1 = %lf xa1_prev = %lf xa1_next = %lf dxa1_l = %lf dxa1_r = %lf \n",xa1[k],xa1[prev],xa1[next],fmod(fabs(xa1[k]-xa1[prev]),2*M_PI),fmod(fabs(xa1[k]-xa1[next]),2*M_PI)); */
 #endif
 
-	  //DEBUGGING POINT SOURCE
-	  /*	  if (i == is + 2*nx1_r/3 && j == js + 2*nx2_r/3){ 
-	    printf("r flux = %lf phi flux = %lf xi flux = %lf\n",dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]),dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]), dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]));
-	    return(0); 
-	  } */
 #ifdef NEW_FLUX  //regroup fluxes in dimension. assume appropriate limited van leer slope has been calculated
 	  //why should signs be flipped on correction fluxes??
 	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1*dx2*dxa1)*(x1_b[i+1]*dx2*dxa1*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1] - (1-dt*fabs(U[k][j][i+1])/(dx1))*fabs(U[k][j][i+1])*flux_limiter_x1_r/2)- //A_{i+1/2}F_{i+1/2}
@@ -908,7 +912,7 @@ int main(int argc, char **argv){
 	}
       }
     }
-    
+
     /*Apply fluxes */
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
