@@ -7,7 +7,7 @@
 //select solver options
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
-#define CFL 0.4 //if set to 1.0, 1D constant advection along grid is exact. 
+#define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
 #define OUTPUT_INTERVAL 10 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
 #undef SECOND_ORDER //flag to turn on van Leer flux limiting
@@ -73,7 +73,7 @@ float bc_x1f_polar(double phi, double xa1, double t);
 double flux_PLM_athena(double r[3], int dir, double dt, double ds, double vel, double imu[3]);
 double bc_interior(double r, double phi, double xa1, double t);
 void gaussianelim(double **A, double *b, double *x, int n, int pivot);
-int permutation(int i, int j, int k, double ** pl, int np);
+int permutation(int i, int j, int k, int ** pl, int np);
 int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, double *xa1,double *xa1_b);
 int cmpfunc (const void * a, const void * b);
 
@@ -88,26 +88,27 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 
 int main(int argc, char **argv){
   int i,j,k,l,n; 
+  int next, next2, prev, prev2; //for indexing third dimension
   int nsteps=400;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
   int nx1 = 50;
-  int nx2 = 12; 
+  int nx2 = 50; 
 
   /* Angular parameter */
   int xa1_uniform = 0; 
   int nxa1;
-  double dxa1; 
+  double *dxa1;  //angular width of cell 
   int N_bruls; //analogous to N in MATLAB code. must be even <=12
   if (xa1_uniform){
-    nxa1 =6;
-    dxa1 = 2*M_PI/(nxa1); //dont mesh all the way to 2pi
+    nxa1 = 6;
   } 
   else {
     N_bruls = 4;
     nxa1 = N_bruls*(N_bruls+2)/2;
   }
+  dxa1 = malloc(sizeof(double)*nxa1);
 
   double phi_z = M_PI/2; 
 
@@ -221,24 +222,6 @@ int main(int argc, char **argv){
     }
   }
   
-  /*Coordinate cell capacity */
-  double *datakappa= (double *) malloc(sizeof(double)*nx1*nx2*nxa1);
-  double ***kappa = allocate_3D_contiguous(datakappa,nxa1+1,nx2,nx1); 
-
-  //cell centered velocities require the ability to access is-1,js-1
-  //  x1[is-1] = x1[is] - dx1; //only works if dx1 < 0.5
-  for(k=ks; k<=ke; k++){
-    for(j=js-1; j<=je; j++){
-      for(i=is-1; i<=ie; i++){
-	if (i==ie)
-	  kappa[k][j][i] = x1[ie-1]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
-	else if (i==(is-1))
-	  kappa[k][j][i] = x1[is]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
-	else
-	  kappa[k][j][i] = x1[i]*dx1*dx2*dxa1/(dx1*dx2*dxa1); // C_ij/(dx1*dx2*dxa1)
-      }
-    }
-  } 
   /*Discretize photon directions */
   double *xa1 = (double *) malloc(sizeof(double)*nxa1); 
   double *xa1_b = (double *) malloc(sizeof(double)*(nxa1+1)); 
@@ -255,15 +238,62 @@ int main(int argc, char **argv){
     bruls_angles2D(N_bruls, phi_z, pw, mu, mu_b, xa1,xa1_b); 
   }
 
-  for(k=ks; k<ke; k++)
+  for (i=0; i<nxa1-1; i++)
+    dxa1[i] = xa1_b[i+1] - xa1_b[i];
+  //last boundary should be 2pi 
+  dxa1[nxa1-1] = 2*M_PI - xa1_b[nxa1-1];
+  
+  /*Coordinate cell capacity */
+  double *datakappa= (double *) malloc(sizeof(double)*nx1*nx2*nxa1);
+  double ***kappa = allocate_3D_contiguous(datakappa,nxa1+1,nx2,nx1); 
+
+  //cell centered velocities require the ability to access is-1,js-1
+  //  x1[is-1] = x1[is] - dx1; //only works if dx1 < 0.5
+  
+  // switch to phase volume formalism:
+  double ***vol = allocate_3D_contiguous(datakappa,nxa1+1,nx2,nx1); 
+
+  for(k=ks; k<=ke; k++){
+    for(j=js-1; j<=je; j++){
+      for(i=is-1; i<=ie; i++){
+	if (i==ie)
+	  kappa[k][j][i] = x1[ie-1];
+	else if (i==(is-1))
+	  kappa[k][j][i] = x1[is];
+	else
+	  kappa[k][j][i] = x1[i];
+	//remove all references to angular dimension for now:
+	vol[k][j][i] = dx1*dx2; 
+	if (i==ie)
+	  vol[k][j][i] *= x1[ie-1];
+	else if (i==(is-1))
+	  vol[k][j][i] *= x1[is];
+	else 
+	  vol[k][j][i] *= x1[i];
+
+	if (k==ke)
+	  vol[k][j][i] *= dxa1[ks];
+	else
+	  vol[k][j][i] *= dxa1[k];
+	//	printf("vol =%lf dxa1[%d]= %lf\n" ,vol[k][j][i],k,dxa1[k]); 
+      }
+    }
+  } 
+
+
+  //uniform 
+  //2*M_PI/(nxa1); //dont mesh all the way to 2pi
+
+  /*  for(k=ks; k<ke; k++)
     printf("xa1[%d] = %lf \n",k,xa1[k]);
   for(k=ks; k<=ke; k++)
     printf("xa1_b[%d] = %lf \n",k,xa1_b[k]);   
+  for(k=ks; k<=ke; k++)
+    printf("dxa1[%d] = %lf \n",k,dxa1[k]);   
   for(k=ks; k<ke; k++)
     printf("mu[%d] = (%lf,%lf) \n",k,mu[k][0],mu[k][1]);
   for(k=ks; k<=ke; k++)
-    printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   
-  return(0);
+    printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   */
 
   /*Average normal edge velocities */
   //now we move from cell centered quantities to edge quantities 
@@ -278,38 +308,32 @@ int main(int argc, char **argv){
   double ***W = allocate_3D_contiguous(dataW,nxa1+1,nx2,nx1);
   double ***source = allocate_3D_contiguous(dataW,nxa1+1,nx2,nx1);//not using contiguous array right now. debug
 
-  //double check k=ke boundary value
-  //for jims notation, we still consider these as cell centered values. Need to be able to reference is-1
-  //why? also not sure if kappa[js-1][is-1] is fine
-  for(k=ks; k<ke; k++){    
+  //Need to be able to reference ghost cells, for which x1[] is undefined 
+  for(k=ks; k<=ke; k++){    
     for(j=js-1; j<=je; j++){       
-      for(i=is-1; i<=ie; i++){//ERROR boundary values not initialized
+      for(i=is-1; i<=ie; i++){
+	if (k==ke)
+	  next = ks; 
+	else 
+	  next = k+1; 
+	//Midpoint approximations to edge velocities 
 	/*	U[k][j][i] = mu[k][0];
 	V[k][j][i] = mu[k][1];
 	W[k][j][i] = -mu[k][1]/kappa[k][j][i]; */
 	//Compute exact average edge velocities 
-	U[k][j][i] = (sin(xa1_b[k+1]) - sin(xa1_b[k]))/dxa1; 
-	V[k][j][i] = (-cos(xa1_b[k+1]) + cos(xa1_b[k]))/dxa1; 
-	W[k][j][i] = -sin(xa1_b[k])/kappa[k][j][i];  
+	U[k][j][i] = (sin(xa1_b[next]) - sin(xa1_b[k]))/dxa1[k]; 
+	V[k][j][i] = (-cos(xa1_b[next]) + cos(xa1_b[k]))/dxa1[k]; 
+	W[k][j][i] = -sin(xa1_b[k]);
+	if (i == ie)
+	  W[k][j][i] /= x1[ie-1]; 
+	else if (i == is-1)
+	  W[k][j][i] /= x1[is];
+	else
+	  W[k][j][i] /= x1[i]; 
 	source[k][j][i] = 0.0;
       }
     }
   }  
-
-  k=ke; //final boundary is periodic 
-  for(j=js; j<=je; j++){       
-    for(i=is; i<=ie; i++){//ERROR boundary values not initialized
-      /*      U[k][j][i] = mu[0][0];
-      V[k][j][i] = mu[0][1]; 
-      W[k][j][i] = -mu[0][1]/kappa[ks][j][i];  */
-      //compute exact average edge velocities
-      U[k][j][i] = (sin(xa1_b[ks]) - sin(xa1_b[k]))/dxa1; 
-      V[k][j][i] = (-cos(xa1_b[ks]) + cos(xa1_b[k]))/dxa1; 
-      W[k][j][i] = -sin(xa1_b[k])/kappa[k][j][i]; 
-      source[k][j][i] = 0.0;    
-    }
-  }
-  
   //ERROR: need to pass absolute values to max finder
   //  printf("max|U| = %lf max|V| = %lf max|W| = %lf\n",find_max_double(dataU,nxa1*nx1*nx2),find_max_double(dataV,nxa1*nx1*nx2),find_max_double(dataW,nxa1*nx1*nx2));
 
@@ -325,7 +349,7 @@ int main(int argc, char **argv){
     for(j=0; j<nx2; j++){
       for(i=0; i<nx1; i++){
 	if (i >=is && i< ie && j >=js && j <je)
-	  cfl_array[k][j][i] = fabs(U[k][j][i])*dt/dx1 + fabs(V[k][j][i])*dt/(x1_b[i]*dx2) + fabs(W[k][j][i])*dt/(x1_b[i]*dxa1); //use boundary radius
+	  cfl_array[k][j][i] = fabs(U[k][j][i])*dt/dx1 + fabs(V[k][j][i])*dt/(x1_b[i]*dx2) + fabs(W[k][j][i])*dt/(x1_b[i]*dxa1[k]); //use boundary radius
 	  //	  printf("i=%d CFL = %lf U =%lf\n",i,cfl_array[k][j][i],U[k][j][i]);	
 	else
 	  cfl_array[k][j][i] =0.0; 
@@ -347,7 +371,7 @@ int main(int argc, char **argv){
       for(j=0; j<nx2; j++){
 	for(i=0; i<nx1; i++){ 
 	if (i >=is && i< ie && j >=js && j <je)
-	  cfl_array[k][j][i] = fabs(U[k][j][i])*dt/dx1 + fabs(V[k][j][i])*dt/(x1_b[i]*dx2) + fabs(W[k][j][i])*dt/(x1_b[i]*dxa1); //use boundary radius
+	  cfl_array[k][j][i] = fabs(U[k][j][i])*dt/dx1 + fabs(V[k][j][i])*dt/(x1_b[i]*dx2) + fabs(W[k][j][i])*dt/(x1_b[i]*dxa1[k]); //use boundary radius
 	else
 	  cfl_array[k][j][i] =0.0; 
 	}
@@ -614,6 +638,7 @@ int main(int argc, char **argv){
       for (i=is; i<ie; i++){
 	realI[index] = (float) I[k][j][i];//*kappa[i][j]; //\bar{q}=qk density in computational space
 	realJ[indexJ] += (float) I[k][j][i]*pw[k];
+	//	printf("pw[%d] =%lf\n",k,pw[k]); 
 	index++;
 	indexJ++;
       }
@@ -683,7 +708,6 @@ int main(int argc, char **argv){
       }
     }
 
-    int next, next2, prev, prev2; //for indexing third dimension
     double flux_limiter =0.0; 
     double flux_limiter_x1_l,flux_limiter_x1_r,flux_limiter_x2_l,flux_limiter_x2_r,flux_limiter_xa1_l,flux_limiter_xa1_r; 
     double *imu = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
@@ -696,8 +720,9 @@ int main(int argc, char **argv){
 	  U_plus = fmax(U[k][j][i],0.0); // max{U_{i-1/2,j,m},0.0} LHS boundary
 	  U_minus = fmin(U[k][j][i+1],0.0); // min{U_{i+1/2,j,m},0.0} RHS boundary
 	  /* First order fluxes: F_i+1/2 - F_i-1/2 */
-	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
-
+	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] = dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*dxa1[k]*dx2*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (U[k][j][i+1] > 0.0){ //middle element is always the upwind element
@@ -743,14 +768,21 @@ int main(int argc, char **argv){
 	  //F^H_{i-1/2,j}
 	  //net_flux[k][j][i] += dt/(kappa[k][j][i]*dx1)*(x1_b[i]*(1-dt*fabs(U[k][j][i])/(dx1))*fabs(U[k][j][i])*flux_limiter_x1_l/2);
 	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*fabs(U[k][j][i+1]) - x1_b[i]*flux_limiter_x1_l*fabs(U[k][j][i]));
-	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]);
+
+	  //working formula for copied flux_PLM
+	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]);
+
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] = dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*dxa1[k]*dx2*flux_limiter_x1_l*U[k][j][i]);
+
 #endif
 	  /* Second coordinate */
 	  V_plus = fmax(V[k][j][i],0.0); // max{V_{i,j-1/2},0.0} LHS boundary
 	  V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundary
 	  /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
-
+	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*(fmax(V[k][j+1][i],0.0)*I[k][j][i] + V_minus*I[k][j+1][i])-dx1*dxa1[k]*(V_plus*I[k][j-1][i] + fmin(V[k][j][i],0.0)*I[k][j][i]));
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (V[k][j+1][i] > 0.0){
@@ -781,7 +813,12 @@ int main(int argc, char **argv){
 	  flux_limiter_x2_l = flux_PLM_athena(pr, 2, dt, kappa[k][j][i]*dx2, fabs(V[k][j][i]), imu);
 	  //G^H_{i,j-1/2}
 	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*((1-dt*fabs(V[k][j][i])/(kappa[k][j][i]*dx2))*fabs(V[k][j][i])*flux_limiter_x2_l/2);
-	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]);
+
+	  //working formula for copied flux_PLM
+	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]);
+
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i] - dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]);
 #endif
 	  /* Third coordinate */
 	  /* Have to manually compute indices due to lack of ghost cells */
@@ -813,7 +850,9 @@ int main(int argc, char **argv){
 	  }
 	  W_plus = fmax(W[k][j][i],0.0); 
 	  W_minus = fmin(W[next][j][i],0.0); 
-	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  //	  net_flux[k][j][i] += (dt/(dxa1)*((fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] += (dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-kappa[k][j][i]*dx1*dx2*(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
 #ifdef SECOND_ORDER
 	  /* Second order fluxes */
 	  if (W[next][j][i] > 0.0){
@@ -826,8 +865,9 @@ int main(int argc, char **argv){
 	    imu[1] = I[next][j][i];  
 	    imu[2] = I[k][j][i];  
 	  }
-	  flux_limiter_xa1_r= flux_PLM(dxa1,imu);
-	  flux_limiter_xa1_r = flux_PLM_athena(pr, 3, dt, dxa1, fabs(W[next][j][i]), imu);//pr isnt dereferenced if dir!=1
+	  //	  flux_limiter_xa1_r= flux_PLM(dxa1,imu);
+	  //correct dxa1[] element? 
+	  flux_limiter_xa1_r = flux_PLM_athena(pr, 3, dt, fmod(fabs(xa1[k]-xa1[next]),2*M_PI), fabs(W[next][j][i]), imu);//pr isnt dereferenced if dir!=1
 	  //H^H_{i,j+1/2}
 	  //	  net_flux[k][j][i] += dt/(dxa1)*((1-dt*fabs(W[next][j][i])/(dxa1))*fabs(W[next][j][i])*flux_limiter_xa1_r/2);
 
@@ -841,12 +881,14 @@ int main(int argc, char **argv){
 	    imu[1] = I[k][j][i];  
 	    imu[2] = I[prev][j][i];  
 	  }
-	  flux_limiter_xa1_l = flux_PLM(dxa1,imu);
-	  flux_limiter_xa1_l = flux_PLM_athena(pr, 3, dt, dxa1, fabs(W[k][j][i]), imu);//pr isnt dereferenced if dir!=1
+	  //	  flux_limiter_xa1_l = flux_PLM(dxa1,imu);
+	  flux_limiter_xa1_l = flux_PLM_athena(pr, 3, dt, fmod(fabs(xa1[k]-xa1[prev]),2*M_PI), fabs(W[k][j][i]), imu);//pr isnt dereferenced if dir!=1
 	  //H^H_{i,j-1/2}
 	  //net_flux[k][j][i] -= dt/(dxa1)*((1-dt*fabs(W[k][j][i])/(dxa1))*fabs(W[k][j][i])*flux_limiter_xa1_l/2);
-
-	  net_flux[k][j][i] += dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]);
+	  //working formula for copied flux_PLM
+	  //	  net_flux[k][j][i] += dt/(dxa1)*(flux_limiter_xa1_r*W[next][j][i] - flux_limiter_xa1_l*W[k][j][i]);
+	  //rewrite for bruls discretization
+	  net_flux[k][j][i] += dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*flux_limiter_xa1_r*W[next][j][i] - kappa[k][j][i]*dx1*dx2*flux_limiter_xa1_l*W[k][j][i]);
 #endif
 
 	  //DEBUGGING POINT SOURCE
@@ -1266,7 +1308,7 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   ordinates[0] = sqrt(1.0/(3.0*(N-1))); //changed
   double dcos = (1-3*pow(ordinates[0],2))*2/(N-2); //changed 
 
-  int i, j,k; 
+  int i, j,k,l,m;
   /* Choice of first cosine is arbitrary. In analogy to Gaussian quadrature */
   for (i=0; i<N/2; i++){
     ordinates[i] = sqrt(ordinates[0]*ordinates[0] + i*dcos); 
@@ -1274,8 +1316,10 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
 
   // Derive weights for integration. Ref: Bruls 1999 appendix
   double *W = malloc(sizeof(double)*N/2); 
-  for (i=0; i<N/2; i++)
-    W[i] = sqrt(4/(3*(N-1)) + i*2/(N-1));  //should I change?
+  for (i=0; i<N/2; i++){
+    W[i] = sqrt(4.0/(3.0*(N-1)) + i*2.0/(N-1));  //should I change?
+    //    printf("W[%d] = %lf\n",i,W[i]); 
+  }
   //compute level weights
   double *lw = malloc(sizeof(double)*N/2); 
   lw[0] = W[0];
@@ -1290,14 +1334,20 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   lw[N/2-1] = 1.0 - sum; 
   
   /* Permutation matrix */
-  double **pl, **pmat; 
-  double *data_pl = malloc(sizeof(double)*N/2*3); 
+  double **pmat; 
   double *data_pmat = malloc(sizeof(double)*N/2*N/2); 
 
-  pl = allocate_2D_contiguous(data_pl,N/2,3); 
   pmat = allocate_2D_contiguous(data_pmat,N/2,N/2); 
   int *plab; 
   plab = malloc(sizeof(int *)*num_rays); 
+  
+  int **pl = malloc(sizeof(int *)*N/2); 
+  //initialize pl to zeros
+  for (i=0; i<N/2; i++)
+    pl[i] = malloc(sizeof(int)*3); 
+  /*  for (i=0; i<N/2; i++)
+    for (j=0; j<3; j++)
+      pl[i][j] = 0;  */
 
   int ray_count = 0; 
   int np =0; 
@@ -1308,10 +1358,17 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   for proper normalization in 3D space */
   for (i=0; i<N/2; i++){
     for (j=0; j<N/2-i; j++){
-      k = N/2-i-j; 
+      k = N/2-1-i-j; //assume this is correct 
       mu[ray_count][0] = ordinates[i]; 
       mu[ray_count][1] = ordinates[j]; 
       ip = permutation(i,j,k,pl,np); 
+      /*      printf("ip = %d np = %d i,j,k = %d,%d,%d\n",ip,np, i,j,k); 
+      printf("pl =\n");
+      for (l=0; l<N/2; l++){
+	for (m=0; m<3; m++)
+	  printf("%d ", pl[l][m]); 
+	printf("\n");
+	} */
       if (ip == -1){ //ray indices havent been loaded yet
 	pl[np][0] = i; 
 	pl[np][1] = j; 
@@ -1322,6 +1379,7 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
       }
       else {
 	pmat[i][ip]++;
+	plab[ray_count] = ip; 	     
       }
       ray_count++;  
     }
@@ -1343,8 +1401,23 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   ray_count*=2; 
 
   /* Solve system of equations to calculate families of point weights */
-  double *wpf = malloc(sizeof(double)*N/2-1); 
+  double *wpf = malloc(sizeof(double)*(N/2-1)); 
+  /*  printf("pmat=\n");
+  for (l=0; l<N/2; l++){
+    for (m=0; m<N/2; m++)
+      printf("%lf ", pmat[l][m]); 
+    printf("\n");
+  }
+  printf("lw=\n");
+  for (l=0; l<N/2; l++)
+  printf("%lf ", lw[l]);  */
+
   gaussianelim(pmat, lw, wpf, N/2-1, 1);
+  /*  for (i=0; i<N/2-1; i++)
+    printf("wpf[%d] = %lf\n",i,wpf[i]);
+  for (i=0; i<ray_count; i++)
+    printf("plab[%d] = %d\n",i,plab[i]);
+  */
   for(i=0; i<num_rays_per_quadrant; i++){
     pw[i] = wpf[plab[i]]/4; 
     pw[i+num_rays_per_quadrant] = wpf[plab[i]]/4; 
@@ -1374,7 +1447,8 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   for (i=1; i<num_rays; i++){
     xa1_b[i] = (xa1[i] + xa1[i-1])/2; 
   }
-  xa1_b[num_rays] = xa1_b[0];  
+  //  xa1_b[num_rays] = xa1_b[0];  
+  xa1_b[num_rays] = 2*M_PI; //can i assume this?
   for (i=0; i <= num_rays; i++){
     mu_b[i][0] = cos(xa1_b[i])*sin(phi_z); 
     mu_b[i][1] = sin(xa1_b[i])*sin(phi_z);
@@ -1383,7 +1457,7 @@ int bruls_angles2D(int N, double phi_z, double *pw, double **mu, double **mu_b, 
   return(num_rays); 
 }
 //stolen from ATHENA to calculate point weights
-int permutation(int i, int j, int k, double ** pl, int np){
+int permutation(int i, int j, int k, int ** pl, int np){
   int ip = -1;
   int l,m,n,o; 
   for (l=0; l<np; l++){
