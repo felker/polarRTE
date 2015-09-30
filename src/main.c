@@ -47,9 +47,9 @@
 
 #undef TRASH
 
-double stream_function(double x, double y);
-double X_physical(double, double);
-double Y_physical(double, double);
+double X_physical(double, double, double);
+double Y_physical(double, double, double);
+double Z_physical(double, double, double);
 void vector_coordinate_to_physical(double vr, double vphi, double vphase, double phi, double r, double *vx, double *vy, double *vz);
 void vector_physical_to_coordinate(double vx, double vy, double phi, double r, double *vr, double *vphi);
 double xA_coordinate_to_physical(double xa1, double x2);
@@ -87,7 +87,7 @@ float analytic_solution(double x,double y, double r_max,double angle_c);
 double newton_raphson(double x, double y, double r_max, double angle_c, double x0, double allerr, int maxmitr);
 
 int main(int argc, char **argv){
-  int i,j,k,l,n; 
+  int i,j,k,l,n,m,o; 
   int next, next2, prev, prev2; //for indexing third dimension
   int nsteps=500;
   double dt =0.02;
@@ -95,22 +95,24 @@ int main(int argc, char **argv){
   /* Computational (2D polar) grid coordinates */
   int nx1 = 50;
   int nx2 = 50; 
+  int nx3 = 50; 
 
   /* Angular parameter */
   int xa1_uniform = 1; 
-  int nxa1;
-  double *dxa1;  //angular width of cell 
+  int xa2_uniform = 1; 
+  int nxa1,nxa2;
+  double *dxa1,*dxa2;  //angular width of cell 
   int N_bruls; //analogous to N in MATLAB code. must be even <=12
   if (xa1_uniform){
     nxa1 = 8;
+    nxa2 = 8;
   } 
   else {
     N_bruls = 4;
     nxa1 = N_bruls*(N_bruls+2)/2;
   }
   dxa1 = malloc(sizeof(double)*nxa1);
-
-  double phi_z = M_PI/2; 
+  dxa2 = malloc(sizeof(double)*nxa2);
 
   //number of ghost cells on both sides of each dimension
   //only need 1 for piecewise constant method
@@ -118,51 +120,64 @@ int main(int argc, char **argv){
   int num_ghost = 2;
   int nx1_r = nx1;
   int nx2_r = nx2;
+  int nx3_r = nx3;
+  int nxa1_r = nxa1;
+  int nxa2_r = nxa2;
   nx1 += 2*num_ghost; 
   nx2 += 2*num_ghost; 
+  nx3 += 2*num_ghost; 
+  nxa1 += 2*num_ghost; 
+  nxa2 += 2*num_ghost; 
 
   /*non-ghost indices */
   int is = num_ghost;
   int ie= is+nx1_r; 
   int js = num_ghost;
   int je = js+nx2_r;
-  int ks = 0;
-  int ke = nxa1;
+  int ks = num_ghost;
+  int ke = ks+nx3_r;
+
+  //use ghost indices for momentum dimensions?
+  int ls = num_ghost; 
+  int le = ls+nxa1_r;
+  int ms = num_ghost; 
+  int me = ms+nxa2_r;
 
   //convention: these ranges refer to the non-ghost cells
   //however, the ghost cells have real coordinate interpretations
   //this means that we must be sure that the number of ghost cells makes sense with the range of coordinates
   //this is a big problem if the phi polar coordinate runs the whole range [0,2pi) for example
 
-  //further, all mesh structures (zonal and nodal) will be nx1 x nx2, although we may not fill the ghost entries with anything meaningful
-  //this is to standardize the loop indexing from is:ie
+  //further, all mesh structures (zonal and nodal) will be nxa2*nxa1*nx3*nx2*nx1, although we may not fill the ghost entries with anything meaningful
+  //this is to standardize the loop indexing from is:ie, et.c
 
   /*another convention: when the phi coordinate is periodic, do we repeat the boundary mesh points? yes for now */
 
   double lx1 = 2.0;//these values are inclusive [x1_i, x1_f]
-  double lx2 = M_PI;
   double x1_i = 0.5;
-  double x2_i = 0.0;
+  double x1_f = x1_i + lx1;
+  double dx1 = lx1/(nx1_r-1);   
 
-  double dx2 = lx2/(nx2_r-1);   
+  /*for now, force a complete sphere of coordinates */
+  double dx2 = 2*M_PI/(nx2_r);   
+  double lx2 = dx2*(nx2_r-1); 
+  double x2_i = 0.0;
   double x2_f = x2_i + lx2;
 
-  if(X2_PERIODIC){
-    dx2 = 2*M_PI/(nx2_r);   
-    lx2 = dx2*(nx2_r-1); 
-    x2_i = 0.0;
-  }
-
-  double dx1 = lx1/(nx1_r-1);   
-  double x1_f = x1_i + lx1;
-
-  printf("dx1=%lf dx2=%lf \n",dx1,dx2); 
+  //polar angle down from z axis 
+  double dx3 = M_PI/(nx3_r);   
+  double lx3 = dx3*(nx3_r-1); 
+  double x3_i = 0.0;
+  double x3_f = x3_i + lx3;
   
   /*Cell centered (zonal) values of computational coordinate position */
   double *x1 = (double *) malloc(sizeof(double)*nx1); 
   double *x2 = (double *) malloc(sizeof(double)*nx2);
+  double *x3 = (double *) malloc(sizeof(double)*nx3);
   x1[is] = x1_i;
   x2[js] = x2_i;
+  x3[ks] = x3_i;
+
   for(i=is+1; i<ie; i++){ 
     x1[i] = x1[i-1] + dx1;
     //    printf("%lf\n",x1[i]);
@@ -171,17 +186,25 @@ int main(int argc, char **argv){
     x2[i] = x2[i-1] + dx2;
     //printf("%lf\n",x2[i]);
   } 
+  for(i=ks+1; i<ke; i++){
+    x3[i] = x3[i-1] + dx3;
+    //printf("%lf\n",x3[i]);
+  } 
 
-  if(X2_PERIODIC){//duplicate the phis at the edges of circle for easy peridoicity 
-    x2[js-1] = x2[je-1];
-    x2[je] = x2[js];
-  }
+  /* Azimuth is periodic */
+  //duplicate the phis at the edges of circle for easy peridoicity 
+  x2[js-1] = x2[je-1];
+  x2[je] = x2[js];
     
   /*Mesh edge (nodal) values of computational coordinate position */
   double *x1_b = (double *) malloc(sizeof(double)*(nx1+1)); 
   double *x2_b = (double *) malloc(sizeof(double)*(nx2+1));
+  double *x3_b = (double *) malloc(sizeof(double)*(nx3+1));
+
   x1_b[is] = x1_i - dx1/2;
   x2_b[js] = x2_i - dx2/2;
+  x3_b[ks] = x3_i - dx3/2;
+
   for(i=is+1; i<=ie; i++){ 
     x1_b[i] = x1_b[i-1] + dx1;
     // printf("x1_b[%d] = %lf\n",i,x1_b[i]);
@@ -190,35 +213,47 @@ int main(int argc, char **argv){
     x2_b[i] = x2_b[i-1] + dx2;
     //    printf("x2_b[%d] = %lf\n",i,x2_b[i]);
   } 
+  for(i=ks+1; i<=ke; i++){
+    x3_b[i] = x3_b[i-1] + dx3;
+  } 
 
   /*Cell centered (zonal) values of physical coordinate position */
   //These must be 2D arrays since coordinate transformation is not diagonal
   //indexed by x1 columns and x2 rows.
 
   /*CONVENTION: flip the dimension ordering in all multiD arrays due to row major ordering of C */
-  double *dataX = (double *) malloc(sizeof(double)*nx1*nx2);
-  double *dataY = (double *) malloc(sizeof(double)*nx1*nx2);
-  double **x = allocate_2D_contiguous(dataX,nx2,nx1); 
-  double **y = allocate_2D_contiguous(dataY,nx2,nx1); 
+  double *dataX = (double *) malloc(sizeof(double)*nx1*nx2*nx3);
+  double *dataY = (double *) malloc(sizeof(double)*nx1*nx2*nx3);
+  double *dataZ = (double *) malloc(sizeof(double)*nx1*nx2*nx3);
+  double ***x = allocate_3D_contiguous(dataX,nx3,nx2,nx1); 
+  double ***y = allocate_3D_contiguous(dataY,nx3,nx2,nx1); 
+  double ***z = allocate_3D_contiguous(dataZ,nx3,nx2,nx1); 
 
   /*precompute coordinate mappings */
-  for(j=js; j<je; j++){
-    for(i=is; i<ie; i++){
-      x[j][i] = X_physical(x1[i],x2[j]); 
-      y[j][i] = Y_physical(x1[i],x2[j]); 
-      //      printf("x,y=%lf,%lf\n",x[j][i],y[j][i]);
+  for(k=ks; k<ke; k++){
+    for(j=js; j<je; j++){
+      for(i=is; i<ie; i++){
+	x[k][j][i] = X_physical(x1[i],x2[j],x3[k]); 
+	y[k][j][i] = Y_physical(x1[i],x2[j],x3[k]); 
+	z[k][j][i] = Z_physical(x1[i],x2[j],x3[k]); 
+	//      printf("x,y,z=%lf,%lf,%lf\n",x[k][j][i],y[k][j][i],z[k][j][i]);
+      }
     }
   }
-
   /*Mesh edge (nodal) values of physical coordinate position */
-  double *dataXb = (double *) malloc(sizeof(double)*(nx1+1)*(nx2+1));
-  double *dataYb = (double *) malloc(sizeof(double)*(nx1+1)*(nx2+1));
-  double **x_b = allocate_2D_contiguous(dataXb,nx2+1,nx1+1); 
-  double **y_b = allocate_2D_contiguous(dataYb,nx2+1,nx1+1); 
-  for(j=js; j<=je; j++){
-    for(i=is; i<=ie; i++){
-      x_b[j][i] = X_physical(x1_b[i],x2_b[j]); 
-      y_b[j][i] = Y_physical(x1_b[i],x2_b[j]); 
+  double *dataXb = (double *) malloc(sizeof(double)*(nx1+1)*(nx2+1)*(nx3+1));
+  double *dataYb = (double *) malloc(sizeof(double)*(nx1+1)*(nx2+1)*(nx3+1));
+  double *dataZb = (double *) malloc(sizeof(double)*(nx1+1)*(nx2+1)*(nx3+1));
+  double ***x_b = allocate_3D_contiguous(dataXb,nx3+1,nx2+1,nx1+1); 
+  double ***y_b = allocate_3D_contiguous(dataYb,nx3+1,nx2+1,nx1+1); 
+  double ***z_b = allocate_3D_contiguous(dataYb,nx3+1,nx2+1,nx1+1); 
+  for(k=ks; k<=ke; k++){
+    for(j=js; j<=je; j++){
+      for(i=is; i<=ie; i++){
+	x_b[k][j][i] = X_physical(x1_b[i],x2_b[j],x3_b[k]); 
+	y_b[k][j][i] = Y_physical(x1_b[i],x2_b[j],x3_b[k]); 
+	z_b[k][j][i] = Z_physical(x1_b[i],x2_b[j],x3_b[k]); 
+      }
     }
   }
   
@@ -989,13 +1024,17 @@ int main(int argc, char **argv){
 }
 
 /* Map to physical (cartesian) coordinates */
-double X_physical(double x1, double x2){
-  double x_cartesian = x1*cos(x2); 
+double X_physical(double x1, double x2, double x3){
+  double x_cartesian = x1*cos(x2)*sin(x3);  
   return(x_cartesian); 
 }
-double Y_physical(double x1, double x2){
-  double y_cartesian = x1*sin(x2); 
+double Y_physical(double x1, double x2, double x3){
+  double y_cartesian = x1*sin(x2)*sin(x3);  
   return(y_cartesian); 
+}
+double Z_physical(double x1, double x2, double x3){
+  double z_cartesian = x1*cos(x3); 
+  return(z_cartesian); 
 }
 
 double initial_condition(double x, double y, double xa1){
