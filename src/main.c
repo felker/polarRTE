@@ -8,7 +8,7 @@
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
 #define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 10 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
 #define SECOND_ORDER //flag to turn on van Leer flux limiting
 
@@ -18,8 +18,8 @@
 //SPATIAL POSITIONS
 
 #undef TEST1 //original crossing beam test over continuous range of cartesian angles
-#define TEST2 //isotropic, thick point source
-#undef TEST3 //isotropic, single point source
+#undef TEST2 //isotropic, thick point source
+#define TEST3 //isotropic, single point source
 #undef TEST4 //beam at delta(\xi), avoiding hole
 
 #define PHI_I M_PI/6
@@ -89,12 +89,12 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 int main(int argc, char **argv){
   int i,j,k,l,n; 
   int next, next2, prev, prev2; //for indexing third dimension
-  int nsteps=400;
+  int nsteps=500;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 100;
-  int nx2 = 100; 
+  int nx1 = 50;
+  int nx2 = 50; 
 
   /* Angular parameter */
   int xa1_uniform = 1; 
@@ -102,7 +102,7 @@ int main(int argc, char **argv){
   double *dxa1;  //angular width of cell 
   int N_bruls; //analogous to N in MATLAB code. must be even <=12
   if (xa1_uniform){
-    nxa1 = 12;
+    nxa1 = 8;
   } 
   else {
     N_bruls = 4;
@@ -283,7 +283,7 @@ int main(int argc, char **argv){
 
   //uniform 
   //2*M_PI/(nxa1); //dont mesh all the way to 2pi
-  /*
+  
   for(k=ks; k<ke; k++)
     printf("xa1[%d] = %lf \n",k,xa1[k]);
   for(k=ks; k<=ke; k++)
@@ -294,9 +294,9 @@ int main(int argc, char **argv){
     printf("mu[%d] = (%lf,%lf) \n",k,mu[k][0],mu[k][1]);
   for(k=ks; k<=ke; k++)
     printf("mu_b[%d] = (%lf,%lf) \n",k,mu_b[k][0],mu_b[k][1]);   
-  */
+  
   //Check Bruls Quadrature conditions-- only makes sense in 3D propagation
-
+  return(0);
   /*Average normal edge velocities */
   //now we move from cell centered quantities to edge quantities 
   //the convention in this code is that index i refers to i-1/2 edge
@@ -658,6 +658,12 @@ int main(int argc, char **argv){
   }
   sprintf(filename,"rte-000.vtk"); 
   write_curvilinear_mesh(filename,1,dims, pts, nvars,vardims, centering, varnames, vars);
+
+#ifdef TEST3
+  printf("Emitting cell:\n"); 
+  printf("r[%d] = %lf phi[%d] = %lf\n",is + 1*nx1_r/3,x1[is + 1*nx1_r/3],js + 1*nx2_r/4,x2[js + 1*nx2_r/4]);
+  printf("(x,y) = (%lf,%lf)\n",x[is + 1*nx1_r/3][js + 1*nx2_r/4],y[is + 1*nx1_r/3][js + 1*nx2_r/4]);
+#endif  
 
   /*-----------------------*/
   /* Main timestepping loop */
