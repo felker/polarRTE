@@ -6,13 +6,15 @@
 
 //select solver options
 #define X2_PERIODIC 1 //flag to wrap phi coordinate and automatically mesh entire circle
-#define AUTO_TIMESTEP 0 //flag for automatically setting dt such that max{cfl_array} = CFL
+#define AUTO_TIMESTEP 1 //flag for automatically setting dt such that max{cfl_array} = CFL
 #define CFL 0.8 //if set to 1.0, 1D constant advection along grid is exact. 
-#define OUTPUT_INTERVAL 1 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
+#define OUTPUT_INTERVAL 0 //how many timesteps to dump simulation data. 0 for only last step, 1 for every step
 
-#define SECOND_ORDER //flag to turn on van Leer flux limiting
+#undef SECOND_ORDER //flag to turn on van Leer flux limiting
 
 #undef NEW_FLUX //flag to use next incarnation of flux formula
+#undef NEWER_ANGLE_FLUX
+#undef NEW_ANGLE_FLUX //flag for redistributing phi fluxes among angular bins (not just same angular bin)
 #undef ANALYTIC_SOLUTION //skip timestepping and output steady state solution in Cartesian basis
 //bounds of outer radial boundary conditions for searchlight (inclusive)
 //SPATIAL POSITIONS
@@ -90,12 +92,12 @@ double newton_raphson(double x, double y, double r_max, double angle_c, double x
 int main(int argc, char **argv){
   int i,j,k,l,n; 
   int next, next2, prev, prev2; //for indexing third dimension
-  int nsteps=60;
+  int nsteps=900;
   double dt =0.02;
   
   /* Computational (2D polar) grid coordinates */
-  int nx1 = 5;
-  int nx2 = 10; 
+  int nx1 = 200;
+  int nx2 = 200; 
 
   /* Angular parameter */
   int xa1_uniform = 1; 
@@ -103,7 +105,7 @@ int main(int argc, char **argv){
   double *dxa1;  //angular width of cell 
   int N_bruls; //analogous to N in MATLAB code. must be even <=12
   if (xa1_uniform){
-    nxa1 = 6;
+    nxa1 = 54;
   } 
   else {
     N_bruls = 4;
@@ -156,8 +158,6 @@ int main(int argc, char **argv){
 
   double dx1 = lx1/(nx1_r-1);   
   double x1_f = x1_i + lx1;
-
-  printf("dx1=%lf dx2=%lf \n",dx1,dx2); 
   
   /*Cell centered (zonal) values of computational coordinate position */
   double *x1 = (double *) malloc(sizeof(double)*nx1); 
@@ -276,11 +276,12 @@ int main(int argc, char **argv){
 	  vol[k][j][i] *= dxa1[ks];
 	else
 	  vol[k][j][i] *= dxa1[k];
-	//	printf("vol =%lf dxa1[%d]= %lf\n" ,vol[k][j][i],k,dxa1[k]); 
+	/*	printf("i,j,k = %d,%d,%d\n",i,j,k); 
+	printf("vol =%lf dxa1[%d]= %lf\n" ,vol[k][j][i],k,dxa1[k]); 
+	printf("A^r = %lf A^phi = %lf A^xi = %lf \n",x1_b[i]*dxa1[k]*dx2,dx1*dxa1[k],kappa[k][j][i]*dx1*dx2);  */
       }
     }
   } 
-
 
   //uniform 
   //2*M_PI/(nxa1); //dont mesh all the way to 2pi
@@ -320,33 +321,39 @@ int main(int argc, char **argv){
 	else 
 	  next = k+1; 
 	//Midpoint approximations to edge velocities 
-	/*	if (k == ke){
+	if (k == ke){
 	  U[k][j][i] = mu[next][0]; // cos(xa1_b[next]); 
-	  V[k][j][i] = mu[next][1]; //sin(xa1[next] +dx2/2);
+	  V[k][j][i] = mu[next][1]; //mu[next][0]*sin(dx2/2) + mu[next][1]*cos(dx2/2); //sin(xa1[next] +dx2/2); // 
 	  W[k][j][i] = -sin(xa1_b[next]); //-mu_b[k][1];
 	}
 	else {
 	  U[k][j][i] = mu[k][0]; //cos(xa1_b[k]); //mu[k][0];
-	  V[k][j][i] = mu[k][1]; //sin(xa1[k] +dx2/2);// mu[k][1];
+	  V[k][j][i] = mu[k][1]; //  mu[k][0]*sin(dx2/2) + mu[k][1]*cos(dx2/2); //sin(xa1[k] + dx2/2);//
 	  W[k][j][i] = -sin(xa1_b[k]); //-mu_b[k][1];
-	}  */
+	}  
 	//Compute exact average edge velocities 
-	U[k][j][i] = (sin(xa1_b[next]) - sin(xa1_b[k]))/dxa1[k]; 
-	//U[k][j][i] = (-cos(xa1_b[next]+ dx2) + cos(xa1_b[k] + dx2) +cos(xa1_b[next]- dx2) - cos(xa1_b[k] - dx2))/(dx2*dxa1[k]); 
+	/*	U[k][j][i] = (sin(xa1_b[next]) - sin(xa1_b[k]))/dxa1[k]; 
 	V[k][j][i] = (-cos(xa1_b[next]) + cos(xa1_b[k]))/dxa1[k]; 
-	W[k][j][i] = -sin(xa1_b[k]);   
-	if (i == ie)
+	W[k][j][i] = -sin(xa1_b[k]);    */
+	if (i == ie){
 	  W[k][j][i] /= x1[ie-1]; 
-	else if (i == is-1)
+	  // V[k][j][i] /= x1[ie-1]; 
+	}
+	else if (i == is-1){
 	  W[k][j][i] /= x1[is];
-	else
+	  // V[k][j][i] /= x1[is];
+	}
+	else{
 	  W[k][j][i] /= x1[i]; 
+	  //	  V[k][j][i] /= x1[i]; 
+	}
 	source[k][j][i] = 0.0;
-	if (k==4 || k==5)
-	  printf("xa1[%d] = %lf, xa1_b[%d] = %lf U,V,W = (%lf,%lf,%lf) \n",k,xa1[k],k,xa1_b[k],U[k][j][i],V[k][j][i],W[k][j][i]);
+	//KYLE DEBUG
+	/*	if (k==4 || k==5 || k==0)
+		printf("xa1[%d] = %lf, xa1_b[%d] = %lf U,V,W = (%lf,%lf,%lf) \n",k,xa1[k],k,xa1_b[k],U[k][j][i],V[k][j][i],W[k][j][i]); */
       }
     }
-  }						       
+  }
 
   //ERROR: need to pass absolute values to max finder
   //  printf("max|U| = %lf max|V| = %lf max|W| = %lf\n",find_max_double(dataU,nxa1*nx1*nx2),find_max_double(dataV,nxa1*nx1*nx2),find_max_double(dataW,nxa1*nx1*nx2));
@@ -681,6 +688,7 @@ int main(int argc, char **argv){
   /*-----------------------*/
   /* Main timestepping loop */
   /*-----------------------*/
+  printf("dt=%lf dx1=%lf dx2=%lf dxa1=%lf \n",dt,dx1,dx2,dxa1[0]); 
   for (n=1; n<nsteps; n++){
     /*Spatial boundary conditions */
     //bcs are specified along a computational coord direction, but are a function of the physical coordinate of adjacent "real cells"
@@ -723,8 +731,11 @@ int main(int argc, char **argv){
 	
 #endif 
 #ifdef TEST5
-	  if (i == is + 1+ 1*nx1_r/3 && j == js + 1*nx2_r/4 && k == 4){ //integer division
+	  //	  if (i == is + 1+ 1*nx1_r/3 && j == js + 2*nx2_r/4 && k == 4){ //integer division
+	    //try true solid angle 
+	  if (i == is + 1+ 1*nx1_r/3 && j == js + 2*nx2_r/4 && k >= 36 && k <= 44){ //integer division
 	    I[k][j][i] = 1.0;	   
+	    //printf("i=%d j=%d k=%d\n",i,j,k);
 	  }
 #endif 
 	  fixed_I = bc_interior(x1[i], x2[j], xa1[k], n*dt);
@@ -734,6 +745,12 @@ int main(int argc, char **argv){
       }
     }
 
+    //manually clear fluxes now that phi fluxes are divided between angular bins
+    for (k=ks; k<ke; k++){
+      for (j=js; j<je; j++){
+	for (i=is; i<ie; i++){
+	  net_flux[k][j][i] =0.0; 
+	}}}
     double flux_limiter =0.0; 
     double flux_limiter_x1_l,flux_limiter_x1_r,flux_limiter_x2_l,flux_limiter_x2_r,flux_limiter_xa1_l,flux_limiter_xa1_r; 
     double *imu = (double *) malloc(sizeof(double)*3); //manually copy array for computing slope limiters
@@ -749,7 +766,7 @@ int main(int argc, char **argv){
 	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 	  //rewrite for bruls discretization
 #if !defined(SECOND_ORDER)
-	  net_flux[k][j][i] = dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*dxa1[k]*dx2*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
+	  net_flux[k][j][i] += dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*(fmax(U[k][j][i+1],0.0)*I[k][j][i] + U_minus*I[k][j][i+1])-x1_b[i]*dxa1[k]*dx2*(U_plus*I[k][j][i-1] + fmin(U[k][j][i],0.0)*I[k][j][i]));
 #else
 	  /* Second order fluxes */
 	  if (U[k][j][i+1] > 0.0){ //middle element is always the upwind element
@@ -800,9 +817,10 @@ int main(int argc, char **argv){
 	  //	  net_flux[k][j][i] = dt/(kappa[k][j][i]*dx1)*(x1_b[i+1]*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*flux_limiter_x1_l*U[k][j][i]);
 
 	  //rewrite for bruls discretization
-	  net_flux[k][j][i] = dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*dxa1[k]*dx2*flux_limiter_x1_l*U[k][j][i]);
+	  net_flux[k][j][i] += dt/(vol[k][j][i])*(x1_b[i+1]*dxa1[k]*dx2*flux_limiter_x1_r*U[k][j][i+1] - x1_b[i]*dxa1[k]*dx2*flux_limiter_x1_l*U[k][j][i]);
 
 #endif
+#if !defined(NEW_ANGLE_FLUX) && !defined(NEWER_ANGLE_FLUX)
 	  /* Second coordinate */
 	  V_plus = fmax(V[k][j][i],0.0); // max{V_{i,j-1/2},0.0} LHS boundary
 	  V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundary
@@ -846,11 +864,89 @@ int main(int argc, char **argv){
 	  //	  net_flux[k][j][i] += dt/(kappa[k][j][i]*dx2)*(flux_limiter_x2_r*V[k][j+1][i] - flux_limiter_x2_l*V[k][j][i]);
 
 	  //rewrite for bruls discretization
+#ifndef NEW_ANGLE_FLUX
 	  net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i] - dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]);
 #endif
 
+#endif
+
+#elif defined(NEW_ANGLE_FLUX) && !defined(NEWER_ANGLE_FLUX)
+	  //KYLE EDIT: Approach #3 implementation
+	  double phi_flux = 0.0; 
+	  // when computing phi fluxes, if the right boundary velocity is positive, or the left edge velocity is negative, redistribute the limited flux according to the angular mapping:
+	  if (k==(ke-1)){
+	    prev = k-1; 
+	    next = ks;
+	  } 
+	  else if(k==ks){
+	    prev = ke-1;
+	    next=k+1; 
+	  }
+	  else{
+	    prev = k-1;
+	    next = k+1;
+	  }
+	  //need another position for van Leer slopes
+	  if (prev==ks){ //these cases might not cover every situation
+	    prev2 = ke-1;
+	    next2 = next+1;
+	  }
+	  else if (next ==ke-1){
+	    next2 = ks; 
+	    prev2 = prev-1;
+	  }
+	  else{
+	    next2 = next+1;
+	    prev2 = prev-1;
+	  }
+	  W_plus = fmax(W[k][j][i],0.0); 
+	  W_minus = fmin(W[next][j][i],0.0); 
+	  //net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i] - dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]);
+	  //	  	    net_flux[k][j][i] += (dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*I[k][j][i] + W_minus*I[next][j][i])-kappa[k][j][i]*dx1*dx2*(W_plus*I[prev][j][i] + fmin(W[k][j][i],0.0)*I[k][j][i])));
+	  // is the limited flux always positive? i think so 
+	  double overlap_ratio = dx2/dxa1[k]; //this assumes uniform dxa1	  
+	  phi_flux  = dt/(vol[k][j][i])*dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i];
+	  //printf("(i,j,k) = %d,%d,%d I = %lf accumulated_flux = %lf phi_flux = %lf v = %lf\n",i,j,k,I[k][j][i],net_flux[k][j][i],phi_flux,V[k][j+1][i]);
+	  // in current tests, all fluxes are in this branch, due to the emission in sin(xi) < 0 region
+	  if (V[k][j+1][i] < 0.0){ //so phi_flux is negative
+	    // sPlit up incoming flux into new angular bins
+	    //incoming flux is in status quo bin, k
+	    //approach #3: solve angular 1D advection
+	    /*	    net_flux[next][j][i] += (dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*phi_flux)));
+	    net_flux[k][j][i] += phi_flux  - dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*fmax(W[next][j][i],0.0)*phi_flux +kappa[k][j][i]*dx1*dx2*fmin(W[k][j][i],0.0)*phi_flux);
+	    net_flux[prev][j][i] -= (dt/(vol[k][j][i])*(kappa[k][j][i]*dx1*dx2*(fmin(W[prev][j][i],0.0)*phi_flux))); */
+	      //kyle debug statements
+	    //    printf("net fluxes: %d,%d,%d=%lf %d,%d,%d= %lf %d,%d,%d=%lf\n",i,j,next,net_flux[next][j][i],i,j,k,net_flux[k][j][i],i,j,prev,net_flux[prev][j][i]); 
+	    //printf("Fluxes into angular bins: next %d = %lf, current %d = %lf, prev %d = %lf\n",next,(1/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*phi_flux))),k,phi_flux  - 1/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*fmax(W[next][j][i],0.0)*phi_flux +kappa[k][j][i]*dx1*dx2*fmin(W[k][j][i],0.0)*phi_flux),prev,-(1/(vol[k][j][i])*(kappa[k][j][i]*dx1*dx2*(fmin(W[prev][j][i],0.0)*phi_flux))));  
+	    //approach #5: hardcode ratio by overlap of solid angle cells
+	    //	    transformation is \xi_present = \xi_upwind - d\phi. d\phi = \phi_upwind - \phi_present
+	    // This is from upper phi boundary, so d\phi is negative, and overlap is with higher angular bin
+	    net_flux[k][j][i] += (1-overlap_ratio)*phi_flux;
+	    net_flux[next][j][i] += overlap_ratio*phi_flux;
+	  }
+	  else{
+	    net_flux[k][j][i] += phi_flux; 
+	  }
+	  phi_flux = dt/(vol[k][j][i])*dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]; 
+	  //printf("phi_flux = %lf v = %lf\n",phi_flux,V[k][j][i]); 
+	  if (V[k][j][i] > 0.0){
+	    // split up incoming flux into new angular bins
+	    //approach #3: solve angular 1D advection
+	    /*	    net_flux[next][j][i] -= (dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*(fmax(W[next][j][i],0.0)*phi_flux)));
+	    net_flux[k][j][i] -= phi_flux  + dt/(vol[k][j][i])*(kappa[next][j][i]*dx1*dx2*fmax(W[next][j][i],0.0)*phi_flux +kappa[k][j][i]*dx1*dx2*fmin(W[k][j][i],0.0)*phi_flux);
+	    net_flux[prev][j][i] += (dt/(vol[k][j][i])*(kappa[k][j][i]*dx1*dx2*(fmin(W[prev][j][i],0.0)*phi_flux))); */
+	    //approach #5: hardcode ratio by overlap of solid angle cells
+	    net_flux[k][j][i] -= (1-overlap_ratio)*phi_flux;
+	    net_flux[prev][j][i] -= overlap_ratio*phi_flux;
+	  }
+	  else{
+	    net_flux[k][j][i] -= phi_flux;
+	  }
 	  //KYLE EDIT: temporarily split spatial and angular loops
-	}}}
+	}
+      }
+    }
+    //    printf("net fluxes: 4,4,4 =%lf 5,4,4 = %lf 4,4,5 =%lf 5,4,5 = %lf\n",net_flux[4][4][4],net_flux[5][4][4],net_flux[4][4][5],net_flux[5][4][5]);
     /*Apply fluxes */
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
@@ -858,12 +954,101 @@ int main(int argc, char **argv){
 	    I[k][j][i] -= net_flux[k][j][i];	    
 	}
       }
-    }
-    for (k=ks; k<ke; k++){
-      for (j=js; j<je; j++){
-	for (i=is; i<ie; i++){
+    } 
+#elif defined(NEWER_ANGLE_FLUX) && !defined(NEW_ANGLE_FLUX)
+      /* Approach #6 */
+      /* Second coordinate */
+	  if (k==(ke-1)){
+	    prev = k-1; 
+	    next = ks;
+	  } 
+	  else if(k==ks){
+	    prev = ke-1;
+	    next=k+1; 
+	  }
+	  else{
+	    prev = k-1;
+	    next = k+1;
+	  }
+	  //need another position for van Leer slopes
+	  if (prev==ks){ //these cases might not cover every situation
+	    prev2 = ke-1;
+	    next2 = next+1;
+	  }
+	  else if (next ==ke-1){
+	    next2 = ks; 
+	    prev2 = prev-1;
+	  }
+	  else{
+	    next2 = next+1;
+	    prev2 = prev-1;
+	  }
+      V_plus = fmax(V[k][j][i],0.0); // max{V_{i,j-1/2},0.0} LHS boundary
+      V_minus = fmin(V[k][j+1][i],0.0); // min{V_{i,j+1/2},0.0} RHS boundar
+      double overlap_ratio = dx2/dxa1[k]; //this assumes uniform dxa1	  
+      //      printf("overlap_ratio = %lf \n",overlap_ratio);
+      // printf("1-overlap_ratio = %lf \n",1-overlap_ratio);
+      /* Fluxes: G_i,j+1/2 - G_i,j-1/2 */
+#if !defined(SECOND_ORDER)
+      net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*(fmax(V[k][j+1][i],0.0)*(I[k][j][i]) + V_minus*(1-overlap_ratio)*I[k][j+1][i] + fmin(V[prev][j+1][i],0.0)*overlap_ratio*I[prev][j+1][i])
+					      - dx1*dxa1[k]*(V_plus*(1-overlap_ratio)*I[k][j-1][i] + fmax(V[prev][j][i],0.0)*overlap_ratio*I[prev][j-1][i] + fmin(V[k][j][i],0.0)*(I[k][j][i]))); //this is only accurate for assumption V is always negative
+      //Inspect specific cell 
+      /*      if (i==4 && j==7 && k==22){
+	printf("I[%d][%d][%d] = %lf\n",k,j,i,I[k][j][i]); 
+	printf("%lf \n",dt/(vol[k][j][i])*(dx1*dxa1[k]*V_minus*((1-overlap_ratio)*I[k][j+1][i])));
+	printf("%lf \n",dt/(vol[k][j][i])*(dx1*dxa1[k]*(V_minus*overlap_ratio*I[prev][j+1][i])));
+	//	printf("I[%d][%d+1][%d] = %lf\n",k,j,i,I[k][j+1][i]); 
+	//printf("I[prev][%d+1][%d] = %lf\n",j,i,I[prev][j+1][i]); 
+	printf("net_flux = %lf\n",net_flux[k][j][i]);
+	printf("dt = %lf volume = %lf\n",dt,vol[k][j][i]);
+	printf("F_{j+1/2} = %lf\n",dt/(vol[k][j][i])*(dx1*dxa1[k]*(fmax(V[k][j+1][i],0.0)*(I[k][j][i]) + V_minus*((1-overlap_ratio)*I[k][j+1][i] + overlap_ratio*I[prev][j+1][i]))));
+	printf("F_{j-1/2} = %lf\n",dt/vol[k][j][i]*(-dx1*dxa1[k]*(V_plus*((1-overlap_ratio)*I[k][j-1][i] + overlap_ratio*I[prev][j-1][i]) + fmin(V[k][j][i],0.0)*(I[k][j][i]))));
+	printf("V_{j-1/2} = %lf V_{j+1/2} = %lf\n",V[k][j][i],V[k][j+1][i]); 
+	}  */
+	
+#else
+
+      /* Second order fluxes */
+      if (V[k][j+1][i] > 0.0){
+	imu[0] = I[k][j-1][i];  //points to the two preceeding bins; 
+	imu[1] = I[k][j][i];  
+	imu[2] = I[k][j+1][i];  
+      }
+      else{
+	imu[0] = I[k][j+2][i];
+	imu[1] = I[k][j+1][i];  
+	imu[2] = I[k][j][i];  
+      }
+      flux_limiter_x2_r = flux_PLM_athena(pr, 2, dt, kappa[k][j][i]*dx2, fabs(V[k][j+1][i]), imu);//pr isnt dereferenced if dir!=1
+      //G^H_{i,j+1/2}
+      if (V[k][j][i] > 0.0){
+	imu[0] = I[k][j-2][i];  //points to the two preceeding bins; 
+	imu[1] = I[k][j-1][i];  
+	imu[2] = I[k][j][i];  
+      }
+      else{
+	imu[0] = I[k][j+1][i]; //centered around current bin
+	imu[1] = I[k][j][i];  
+	imu[2] = I[k][j-1][i];  
+      }
+      flux_limiter_x2_l = flux_PLM_athena(pr, 2, dt, kappa[k][j][i]*dx2, fabs(V[k][j][i]), imu);
+      net_flux[k][j][i] += dt/(vol[k][j][i])*(dx1*dxa1[k]*flux_limiter_x2_r*V[k][j+1][i] - dxa1[k]*dx1*flux_limiter_x2_l*V[k][j][i]);
+#endif   
+  }
+   }
+}	
 
 
+      /*Apply fluxes */
+      for (k=ks; k<ke; k++){
+        for (j=js; j<je; j++){
+          for (i=is; i<ie; i++){
+            I[k][j][i] -= net_flux[k][j][i];
+	  }
+	}
+      }
+#endif
+#if  !defined(NEW_ANGLE_FLUX) && !defined(NEWER_ANGLE_FLUX)
 	  /* Third coordinate */
 	  /* Have to manually compute indices due to lack of ghost cells */
 	  /* Fluxes: H_i,j,n+1/2 - H_i,j,n-1/2 */
@@ -905,18 +1090,12 @@ int main(int argc, char **argv){
 	    //Modify traditional flux update to separate spatial and angular fluxes 
 	    imu[0] = I[prev][j][i];  //points to the two preceeding bins; 
 	    imu[1] = I[k][j][i];  
-	    imu[2] = I[next][j][i];   /*
-	    imu[0] = net_flux[prev][j][i]; 
-	    imu[1] = net_flux[k][j][i]; 
-	    imu[2] = net_flux[next][j][i]; */
+	    imu[2] = I[next][j][i];   
 	  }
 	  else{
 	    imu[0] = I[next2][j][i];
 	    imu[1] = I[next][j][i];  
-	    imu[2] = I[k][j][i];  /*
-	    imu[0] = net_flux[next2][j][i];
-	    imu[1] = net_flux[next][j][i];  
-	    imu[2] = net_flux[k][j][i]; */  
+	    imu[2] = I[k][j][i];  
 	  }
 	  //	  flux_limiter_xa1_r= flux_PLM(dxa1,imu);
 	  //correct dxa1[] element? 
@@ -928,19 +1107,12 @@ int main(int argc, char **argv){
 	    //Modify traditional flux update to separate spatial and angular fluxes 
 	    imu[0] = I[prev2][j][i];  //points to the two preceeding bins; 
 	    imu[1] = I[prev][j][i];  
-	    imu[2] = I[k][j][i];  /*
-	    imu[0] = net_flux[prev2][j][i];  //points to the two preceeding bins; 
-	    imu[1] = net_flux[prev][j][i];  
-	    imu[2] = net_flux[k][j][i];  */
+	    imu[2] = I[k][j][i];  
 	  }
 	  else{
 	    imu[0] = I[next][j][i]; //centered around current bin
 	    imu[1] = I[k][j][i];  
-	    imu[2] = I[prev][j][i];  
-	    /*
-	    imu[0] = net_flux[next][j][i]; //centered around current bin
-	    imu[1] = net_flux[k][j][i];  
-	    imu[2] = net_flux[prev][j][i];   */
+	    imu[2] = I[prev][j][i];  	    
 	  }
 	  //	  flux_limiter_xa1_l = flux_PLM(dxa1,imu);
 	  flux_limiter_xa1_l = flux_PLM_athena(pr, 3, dt, fmod(fabs(xa1[k]-xa1[prev]),2*M_PI), fabs(W[k][j][i]), imu);//pr isnt dereferenced if dir!=1
@@ -967,15 +1139,17 @@ int main(int argc, char **argv){
       }
     }
 
+
     /*Apply fluxes */
       for (k=ks; k<ke; k++){
 	for (j=js; j<je; j++){
 	  for (i=is; i<ie; i++){
-	    //	    I[k][j][i] -= net_flux[k][j][i];
+	    I[k][j][i] -= net_flux[k][j][i];
 	    I[k][j][i] -= angle_flux[k][j][i];
 	}
       }
     }
+#endif 
     
     /*Source terms */
       for (k=ks; k<ke; k++){
